@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.9.1-rc13] — 2026-07-02
+
+### Added
+- **WaveForge LA — Logic extraction & tested decoder modules**
+  - UART, I2C, and SPI decoder logic extracted from `WaveformLaView.tsx` into `laDecoders.ts`
+  - `generateLaTestPattern` moved to `laDecoders.ts` and covered with bit-level unit tests
+  - `laChannelConfig.ts` created for LA channel/decoder persistence defaults and constants
+  - `exportUtils.ts` created for shared blob/timestamp helpers; `scopeExport.ts` and LA CSV/snapshot exports now use it
+  - 25 new Vitest tests for `laDecoders.ts` covering UART (parity, data bits, stop bits, inverted logic), I2C START/STOP/ACK, and SPI modes
+
+### Fixed
+- **WaveForge LA — I2C false START/STOP detection**
+  - `decodeI2C` now requires SCL to stay high across both samples when detecting START/STOP, preventing false conditions when SCL changed with SDA
+- **WaveForge LA — 8-bit trace rendering**
+  - Canvas draw loop now reads the correct byte for each channel in 8-bit mode (previously always returned 0)
+- **WaveForge LA — default decoder channels aligned with test pattern**
+  - I2C defaults now `SCL=1, SDA=2`; SPI defaults now `MOSI=3, MISO=4, SCK=5, CS=6` so the Pattern button decodes correctly out of the box
+
+### Changed
+- **WaveForge LA — architecture**
+  - `WaveformLaView.tsx` reduced by ~400 lines; decoder logic is now reusable and unit-testable
+  - `WaveformDecodeView.tsx` reuses the unified `decodeUartChunk` from `laDecoders.ts`
+
+---
+
 ## [0.9.1-rc12] — 2026-06-29
 
 ### Added

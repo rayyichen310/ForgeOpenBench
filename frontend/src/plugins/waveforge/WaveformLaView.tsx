@@ -4,403 +4,14 @@ import type { UsbDataChunk } from "./usbTypes";
 import { RingBuffer } from "./RingBuffer";
 import { globalBus } from "../../core/global_bus";
 import { toast } from "../../shared/hooks/useToastStore";
-
-const CHANNEL_HEIGHT = 22;
-const CHANNEL_GAP    = 2;
-const LABEL_WIDTH    = 48;
-const RING_CAPACITY  = 8 * 1024 * 1024; // 8 MiB raw bytes (frozen snapshot)
-const MAX_TICKER     = 200; // max ticker rows to keep
-// Jitter ring: last 2s worth of samples for live rolling display
-// At 12MHz 16-bit: 2s = 24M samples = 48MB — cap at 500ms = 6M samples
-const JITTER_CAP_SAMPLES = 6_000_000; // 500ms @ 12MHz 16-bit
-
-// ---------------------------------------------------------------------------
-// Inline UART decoder (same algorithm as WaveformDecodeView)
-// ---------------------------------------------------------------------------
-interface TickerRow { ts: number; byte: number; sample: number; error: boolean; }
+import { MAX_TICKER, decodeUartChunk, decodeI2C, decodeSPI, generateLaTestPattern } from "./laDecoders";
+import type { TickerRow, DecoderTab } from "./laDecoders";
+import { DEFAULT_CHANNEL_HEIGHT, DEFAULT_CHANNEL_GAP, DEFAULT_LABEL_WIDTH, DEFAULT_RING_CAPACITY, DEFAULT_JITTER_CAP_SAMPLES, SAMPLE_RATES, TIMEBASE_PRESETS, CHANNEL_COLORS, DEFAULT_BAUDS, loadChannels, saveChannels, loadDecoders, saveDecoders } from "./laChannelConfig";
+import type { LaChannel } from "./laChannelConfig";
+import { makeTimestamp, downloadBlob, canvasToPngDataUrl } from "./exportUtils";
 
 interface Cursor { sample: number; dragging: boolean; }
 
-interface I2CFrame {
-  startSample: number;
-  endSample: number;
-  ts: number;
-  type: "start" | "repeated-start" | "stop" | "byte" | "ack" | "nack";
-  addr?: number;     // 7-bit address
-  data?: number;     // byte value
-  rw?: "read" | "write";
-}
-
-interface SPIFrame {
-  startSample: number;
-  endSample: number;
-  ts: number;
-  mosi?: number;
-  miso?: number;
-}
-
-type DecoderTab = "uart" | "i2c" | "spi";
-
-function decodeUartChunk(
-  samples: Uint8Array, sampleRate: number, baud: number, channel: number, baseSample = 0
-): TickerRow[] {
-  const spb = sampleRate / baud;
-  const rows: TickerRow[] = [];
-  const bit = (s: number) => (samples[Math.max(0, Math.min(samples.length-1, s))] >> channel) & 1;
-  let i = 0;
-  while (i < samples.length - 1) {
-    if (bit(i) === 1 && bit(i + 1) === 0) {
-      const fs = i + 1;
-      const at = (n: number) => bit(Math.round(fs + (n + 0.5) * spb));
-      if (at(0) !== 0) { i++; continue; }
-      let v = 0;
-      for (let b = 0; b < 8; b++) v |= at(b + 1) << b;
-      const stop = at(9);
-      const absSample = baseSample + fs;
-      rows.push({ ts: absSample / sampleRate, byte: v, sample: absSample, error: stop !== 1 });
-      i = Math.round(fs + 10 * spb);
-    } else { i++; }
-  }
-  return rows;
-}
-
-function decodeI2C(
-  samples: Uint8Array, sampleRate: number, sclCh: number, sdaCh: number
-): I2CFrame[] {
-  const rows: I2CFrame[] = [];
-  const bit = (s: number, ch: number) => (samples[Math.max(0, Math.min(samples.length - 1, s))] >> ch) & 1;
-  const scl = (s: number) => bit(s, sclCh);
-  const sda = (s: number) => bit(s, sdaCh);
-  let i = 0;
-  let inFrame = false;
-  let byteStart = 0;
-  let byte = 0;
-  let bitCount = 0;
-  let isAddr = true;
-
-  while (i < samples.length - 1) {
-    // START: SDA falling while SCL high
-    if (scl(i) === 1 && sda(i) === 1 && sda(i + 1) === 0) {
-      const type = inFrame ? "repeated-start" : "start";
-      rows.push({ startSample: i, endSample: i, ts: i / sampleRate, type });
-      inFrame = true;
-      isAddr = true;
-      bitCount = 0;
-      byte = 0;
-      i++;
-      continue;
-    }
-    // STOP: SDA rising while SCL high
-    if (inFrame && scl(i) === 1 && sda(i) === 0 && sda(i + 1) === 1) {
-      rows.push({ startSample: i, endSample: i, ts: i / sampleRate, type: "stop" });
-      inFrame = false;
-      isAddr = true;
-      bitCount = 0;
-      byte = 0;
-      i++;
-      continue;
-    }
-    // SCL rising edge: sample SDA
-    if (inFrame && scl(i) === 0 && scl(i + 1) === 1) {
-      const sampleIdx = i + 1;
-      const b = sda(sampleIdx);
-      if (bitCount < 8) {
-        if (bitCount === 0) byteStart = sampleIdx;
-        byte = (byte << 1) | b;
-        bitCount++;
-      } else {
-        // ACK/NACK bit
-        const ack = b === 0;
-        const endSample = sampleIdx;
-        if (isAddr) {
-          const addr7 = byte >> 1;
-          const rw = (byte & 1) ? "read" : "write";
-          rows.push({ startSample: byteStart, endSample, ts: byteStart / sampleRate, type: "byte", addr: addr7, rw });
-          isAddr = false;
-        } else {
-          rows.push({ startSample: byteStart, endSample, ts: byteStart / sampleRate, type: "byte", data: byte });
-        }
-        rows.push({ startSample: sampleIdx, endSample, ts: sampleIdx / sampleRate, type: ack ? "ack" : "nack" });
-        byte = 0;
-        bitCount = 0;
-        if (rows.length > MAX_TICKER) break;
-      }
-      i = sampleIdx;
-      continue;
-    }
-    i++;
-  }
-  return rows;
-}
-
-function decodeSPI(
-  samples: Uint8Array, sampleRate: number, mosiCh: number, misoCh: number,
-  sckCh: number, csCh: number, mode: 0 | 1 | 2 | 3, bits: 8 | 16, csActiveLow: boolean
-): SPIFrame[] {
-  const rows: SPIFrame[] = [];
-  const bit = (s: number, ch: number) => (samples[Math.max(0, Math.min(samples.length - 1, s))] >> ch) & 1;
-  const cs = (s: number) => bit(s, csCh);
-  const csActive = (s: number) => csActiveLow ? cs(s) === 0 : cs(s) === 1;
-
-  // Determine sample edge: CPHA 0 = sample on first edge, CPHA 1 = sample on second edge
-  const cpha = mode & 1;
-  const cpol = (mode >> 1) & 1;
-  const sampleRising = cpha === 0 ? cpol === 0 : cpol === 1;
-
-  let i = 0;
-  let inFrame = false;
-  let wordStart = 0;
-  let mosi = 0;
-  let miso = 0;
-  let bitCount = 0;
-  let prevSck = 0;
-
-  while (i < samples.length) {
-    const active = csActive(i);
-    if (!inFrame && active) {
-      inFrame = true;
-      wordStart = i;
-      mosi = 0; miso = 0; bitCount = 0;
-      prevSck = bit(i, sckCh);
-    } else if (inFrame && !active) {
-      inFrame = false;
-      if (bitCount > 0) {
-        rows.push({ startSample: wordStart, endSample: i, ts: wordStart / sampleRate, mosi, miso });
-      }
-      if (rows.length > MAX_TICKER) break;
-    }
-
-    if (inFrame) {
-      const sck = bit(i, sckCh);
-      const rising = prevSck === 0 && sck === 1;
-      const falling = prevSck === 1 && sck === 0;
-      const sampleEdge = sampleRising ? rising : falling;
-      if (sampleEdge) {
-        mosi = (mosi << 1) | bit(i, mosiCh);
-        miso = (miso << 1) | bit(i, misoCh);
-        bitCount++;
-        if (bitCount === bits) {
-          rows.push({ startSample: wordStart, endSample: i, ts: wordStart / sampleRate, mosi, miso });
-          mosi = 0; miso = 0; bitCount = 0;
-          wordStart = i;
-          if (rows.length > MAX_TICKER) break;
-        }
-      }
-      prevSck = sck;
-    }
-    i++;
-  }
-  return rows;
-}
-
-// Generate a synthetic LA capture for offline decoder/UX testing.
-// UART on D0, I2C on D1/D2, SPI on D3-D6 at 1 MHz 8-bit.
-function generateLaTestPattern(sampleRate: number, durationS: number): Uint8Array {
-  const totalSamples = Math.floor(sampleRate * durationS);
-  const samples = new Uint8Array(totalSamples);
-  const bitTime = Math.floor(sampleRate / 115200);
-  if (bitTime < 2) return samples;
-
-  // UART on D0: "Hi\n" at 115200 baud
-  const uartBits: number[] = [];
-  const pushBit = (v: number, n: number) => { for (let i = 0; i < n; i++) uartBits.push(v); };
-  const uartByte = (b: number) => {
-    pushBit(0, bitTime); // start
-    for (let i = 0; i < 8; i++) pushBit((b >> i) & 1, bitTime);
-    pushBit(1, bitTime); // stop
-  };
-  uartByte(0x48); // H
-  uartByte(0x69); // i
-  uartByte(0x0A); // \n
-  pushBit(1, bitTime * 10); // idle gap
-
-  // I2C on D1=SCL, D2=SDA (7-bit addr 0x50, write, data 0x01 0x02 0x03)
-  const i2cBits: Array<{ scl: number; sda: number }> = [];
-  const pushI2c = (scl: number, sda: number, n: number) => { for (let i = 0; i < n; i++) i2cBits.push({ scl, sda }); };
-  const i2cBit = (sda: number) => {
-    pushI2c(0, sda, bitTime); // SCL low, set SDA
-    pushI2c(1, sda, bitTime); // SCL high
-    pushI2c(0, sda, bitTime); // SCL low
-  };
-  const i2cStart = () => { pushI2c(1, 1, bitTime); pushI2c(1, 0, bitTime); };
-  const i2cStop = () => { pushI2c(0, 0, bitTime); pushI2c(1, 0, bitTime); pushI2c(1, 1, bitTime); };
-  const i2cByte = (byte: number, ack: boolean) => {
-    for (let i = 7; i >= 0; i--) i2cBit((byte >> i) & 1);
-    i2cBit(ack ? 0 : 1);
-  };
-  pushI2c(1, 1, bitTime * 4); // idle
-  i2cStart();
-  i2cByte(0xA0, true); // 0x50 + W
-  i2cByte(0x01, true);
-  i2cByte(0x02, true);
-  i2cByte(0x03, true);
-  i2cStop();
-  pushI2c(1, 1, bitTime * 4); // idle
-
-  // SPI on D3=MOSI, D4=MISO, D5=SCK, D6=CS (mode 0, CS active low)
-  const spiBits: Array<{ mosi: number; miso: number; sck: number; cs: number }> = [];
-  const pushSpi = (mosi: number, miso: number, sck: number, cs: number, n: number) => {
-    for (let i = 0; i < n; i++) spiBits.push({ mosi, miso, sck, cs });
-  };
-  const spiBit = (mosi: number, miso: number) => {
-    pushSpi(mosi, miso, 0, 0, bitTime); // leading edge
-    pushSpi(mosi, miso, 1, 0, bitTime); // trailing edge
-  };
-  const spiByte = (mosi: number, miso: number) => {
-    for (let i = 7; i >= 0; i--) spiBit((mosi >> i) & 1, (miso >> i) & 1);
-  };
-  pushSpi(0, 0, 0, 1, bitTime); // idle
-  pushSpi(0, 0, 0, 0, bitTime); // CS active
-  spiByte(0xA5, 0x12);
-  spiByte(0x5A, 0x34);
-  pushSpi(0, 0, 0, 1, bitTime); // CS inactive
-
-  // Interleave each sub-pattern into the total buffer, scaling to fit.
-  const uartScale = Math.max(1, Math.floor(totalSamples / uartBits.length));
-  const i2cScale = Math.max(1, Math.floor(totalSamples / i2cBits.length));
-  const spiScale = Math.max(1, Math.floor(totalSamples / spiBits.length));
-
-  for (let s = 0; s < totalSamples; s++) {
-    let byte = 0;
-    const ui = Math.floor(s / uartScale);
-    if (ui < uartBits.length) byte |= uartBits[ui] << 0;
-    const ii = Math.floor(s / i2cScale);
-    if (ii < i2cBits.length) {
-      byte |= i2cBits[ii].scl << 1;
-      byte |= i2cBits[ii].sda << 2;
-    }
-    const si = Math.floor(s / spiScale);
-    if (si < spiBits.length) {
-      byte |= spiBits[si].mosi << 3;
-      byte |= spiBits[si].miso << 4;
-      byte |= spiBits[si].sck << 5;
-      byte |= spiBits[si].cs << 6;
-    }
-    samples[s] = byte;
-  }
-  return samples;
-}
-
-const CHANNEL_COLORS = [
-  "#F59E0B","#60A5FA","#F87171","#FBBF24","#86EFAC",
-  "#C084FC","#FB923C","#22D3EE","#F59E0B","#60A5FA",
-  "#F87171","#FBBF24","#86EFAC","#C084FC","#FB923C","#22D3EE",
-];
-
-const SAMPLE_RATES = [
-  { label: "1 MHz",  hz: 1_000_000 },
-  { label: "4 MHz",  hz: 4_000_000 },
-  { label: "8 MHz",  hz: 8_000_000 },
-  { label: "12 MHz", hz: 12_000_000 },
-  { label: "24 MHz", hz: 24_000_000, eightBitOnly: true },
-];
-
-const TIMEBASE_PRESETS = [
-  { label: "1 µs/div",   s: 1e-6   },
-  { label: "2 µs/div",   s: 2e-6   },
-  { label: "5 µs/div",   s: 5e-6   },
-  { label: "10 µs/div",  s: 1e-5   },
-  { label: "20 µs/div",  s: 2e-5   },
-  { label: "50 µs/div",  s: 5e-5   },
-  { label: "100 µs/div", s: 1e-4   },
-  { label: "200 µs/div", s: 2e-4   },
-  { label: "500 µs/div", s: 5e-4   },
-  { label: "1 ms/div",   s: 1e-3   },
-  { label: "2 ms/div",   s: 2e-3   },
-  { label: "5 ms/div",   s: 5e-3   },
-  { label: "10 ms/div",  s: 1e-2   },
-  { label: "20 ms/div",  s: 2e-2   },
-  { label: "50 ms/div",  s: 5e-2   },
-  { label: "100 ms/div", s: 0.1    },
-  { label: "200 ms/div", s: 0.2    },
-  { label: "500 ms/div", s: 0.5    },
-  { label: "1 s/div",    s: 1.0    },
-  { label: "2 s/div",    s: 2.0    },
-  { label: "5 s/div",    s: 5.0    },
-  { label: "10 s/div",   s: 10.0   },
-  { label: "20 s/div",   s: 20.0   },
-  { label: "50 s/div",   s: 50.0   },
-  { label: "100 s/div",  s: 100.0  },
-];
-
-interface LaChannel {
-  id: number;
-  label: string;
-  color: string;
-  enabled: boolean;
-  visible: boolean;
-  decoder: 'uart' | 'i2c' | 'spi' | null;
-}
-
-const CHANNELS_STORAGE_KEY = "waveforge:la:channels";
-const DECODERS_STORAGE_KEY = "waveforge:la:decoders";
-
-function loadChannels(): LaChannel[] {
-  try {
-    const raw = localStorage.getItem(CHANNELS_STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as Partial<LaChannel>[];
-      if (Array.isArray(parsed) && parsed.length === 16) {
-        return parsed.map((p, i) => ({
-          id: typeof p.id === "number" ? p.id : i,
-          label: typeof p.label === "string" ? p.label : `D${i}`,
-          color: typeof p.color === "string" ? p.color : CHANNEL_COLORS[i],
-          enabled: typeof p.enabled === "boolean" ? p.enabled : true,
-          visible: typeof p.visible === "boolean" ? p.visible : true,
-          decoder: p.decoder === "uart" || p.decoder === "i2c" || p.decoder === "spi" ? p.decoder : null,
-        }));
-      }
-    }
-  } catch { /* ignore */ }
-  return Array.from({ length: 16 }, (_, i) => ({
-    id: i,
-    label: `D${i}`,
-    color: CHANNEL_COLORS[i],
-    enabled: true,
-    visible: true,
-    decoder: null,
-  }));
-}
-
-function saveChannels(channels: LaChannel[]) {
-  try { localStorage.setItem(CHANNELS_STORAGE_KEY, JSON.stringify(channels)); } catch { /* ignore */ }
-}
-
-interface DecoderConfigLoaded {
-  tab: DecoderTab;
-  uart: { baud: number; ch: number };
-  i2c: { scl: number; sda: number; addrBits: 7 | 8 };
-  spi: { mosi: number; miso: number; sck: number; cs: number; mode: 0 | 1 | 2 | 3; bits: 8 | 16; csActiveLow: boolean };
-}
-
-function loadDecoders(): DecoderConfigLoaded {
-  try {
-    const raw = localStorage.getItem(DECODERS_STORAGE_KEY);
-    if (raw) {
-      const p = JSON.parse(raw);
-      return {
-        tab: ["uart", "i2c", "spi"].includes(p.tab) ? p.tab : "uart",
-        uart: { baud: p.uart?.baud ?? 115200, ch: p.uart?.ch ?? 0 },
-        i2c: { scl: p.i2c?.scl ?? 0, sda: p.i2c?.sda ?? 1, addrBits: p.i2c?.addrBits === 8 ? 8 : 7 },
-        spi: {
-          mosi: p.spi?.mosi ?? 0, miso: p.spi?.miso ?? 1, sck: p.spi?.sck ?? 2, cs: p.spi?.cs ?? 3,
-          mode: [0, 1, 2, 3].includes(p.spi?.mode) ? p.spi.mode : 0,
-          bits: p.spi?.bits === 16 ? 16 : 8,
-          csActiveLow: p.spi?.csActiveLow !== false,
-        },
-      };
-    }
-  } catch { /* ignore */ }
-  return {
-    tab: "uart", uart: { baud: 115200, ch: 0 },
-    i2c: { scl: 0, sda: 1, addrBits: 7 },
-    spi: { mosi: 0, miso: 1, sck: 2, cs: 3, mode: 0, bits: 8, csActiveLow: true },
-  };
-}
-
-function saveDecoders(config: DecoderConfigLoaded) {
-  try { localStorage.setItem(DECODERS_STORAGE_KEY, JSON.stringify(config)); } catch { /* ignore */ }
-}
 
 interface Props {
   transport: UsbTransport;
@@ -408,11 +19,11 @@ interface Props {
   connected: boolean;
 }
 
-const BAUDS = [1200,2400,4800,9600,19200,38400,57600,115200,230400,460800,921600];
+const BAUDS = DEFAULT_BAUDS;
 
 export function WaveformLaView({ transport, isActive, connected }: Props) {
   const canvasRef    = useRef<HTMLCanvasElement>(null);
-  const ringRef      = useRef(new RingBuffer(RING_CAPACITY));
+  const ringRef      = useRef(new RingBuffer(DEFAULT_RING_CAPACITY));
   const frozenBufRef = useRef<Uint8Array | null>(null);
   const runningRef   = useRef(false);
   const rafRef       = useRef<number>(0);
@@ -487,7 +98,7 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
     const bps = liveWidthRef.current === 16 ? 2 : 1;
     const rate = liveRateRef.current;
     const divCount = 10;
-    const displayW = W - LABEL_WIDTH;
+    const displayW = W - DEFAULT_LABEL_WIDTH;
     const isLive = runningRef.current;
 
     // Live: all accumulated data up to MAX_LIVE_WINDOW_S, expands as chunks arrive
@@ -511,7 +122,7 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
         const count = readHead - winStart;
         const dstOff = (maxSamples - count) * bps; // right-align in buffer
         for (let i = 0; i < count; i++) {
-          const s = jBuf[(winStart + i) % JITTER_CAP_SAMPLES];
+          const s = jBuf[(winStart + i) % DEFAULT_JITTER_CAP_SAMPLES];
           if (bps === 2) { tmpBytes[dstOff + i*2] = s & 0xFF; tmpBytes[dstOff + i*2+1] = (s >> 8) & 0xFF; }
           else { tmpBytes[dstOff + i] = s & 0xFF; }
         }
@@ -541,14 +152,14 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
     ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--fob-border').trim();
     ctx.lineWidth = 1;
     for (let i = 0; i <= divCount; i++) {
-      const x = LABEL_WIDTH + (i * displayW) / divCount;
+      const x = DEFAULT_LABEL_WIDTH + (i * displayW) / divCount;
       ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
     }
 
     if (buf.length === 0) {
       ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--fob-text-dim').trim();
       ctx.font = "11px monospace";
-      ctx.fillText("No data — press RUN to capture", LABEL_WIDTH + 12, H / 2);
+      ctx.fillText("No data — press RUN to capture", DEFAULT_LABEL_WIDTH + 12, H / 2);
       return;
     }
 
@@ -561,10 +172,10 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
     const visibleChannels = channels.filter(c => c.visible);
 
     visibleChannels.forEach((ch, idx) => {
-      const yMid = idx * (CHANNEL_HEIGHT + CHANNEL_GAP) + CHANNEL_HEIGHT / 2 + 4;
+      const yMid = idx * (DEFAULT_CHANNEL_HEIGHT + DEFAULT_CHANNEL_GAP) + DEFAULT_CHANNEL_HEIGHT / 2 + 4;
       if (yMid > H - 14) return;
-      const highY = yMid - CHANNEL_HEIGHT / 3;
-      const lowY  = yMid + CHANNEL_HEIGHT / 3;
+      const highY = yMid - DEFAULT_CHANNEL_HEIGHT / 3;
+      const lowY  = yMid + DEFAULT_CHANNEL_HEIGHT / 3;
 
       ctx.fillStyle = ch.color;
       ctx.font = "9px monospace";
@@ -589,10 +200,11 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
         let bit: 0 | 1 = 0;
         if (liveWidthRef.current === 16) {
           bit = hwCh < 8 ? ((buf[byteIdx] >> hwCh) & 1) as 0|1 : ((buf[byteIdx + 1] >> (hwCh - 8)) & 1) as 0|1;
+        } else {
           bit = ((buf[byteIdx] >> hwCh) & 1) as 0|1;
         }
 
-        const x = LABEL_WIDTH + px;
+        const x = DEFAULT_LABEL_WIDTH + px;
         const y = bit ? highY : lowY;
 
         if (prevState !== null && prevState !== bit) {
@@ -624,7 +236,7 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
       if (i === 0 && offsetS === 0) continue;
       const frac = i / divCount;
       if (isLive && !windowFilled && frac < (1 - filledFrac)) continue;
-      const x = LABEL_WIDTH + (i * displayW) / divCount;
+      const x = DEFAULT_LABEL_WIDTH + (i * displayW) / divCount;
       const tS = offsetS + i * divS;
       const tMs = tS * 1000;
       const label = tMs < 1
@@ -640,10 +252,10 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
       const totalSamples = Math.floor((frozenBufRef.current?.length ?? ringRef.current.count) / bps);
       const zoom = Math.max(1, zoomSamplesRef.current ?? totalSamples);
       const pan = panSampleRef.current;
-      const sampleToX = (s: number) => LABEL_WIDTH + ((s - pan) / zoom) * displayW;
+      const sampleToX = (s: number) => DEFAULT_LABEL_WIDTH + ((s - pan) / zoom) * displayW;
       const drawCursorLine = (s: number, color: string, label: string, dash: number[]) => {
         const x = sampleToX(s);
-        if (x < LABEL_WIDTH || x > W) return;
+        if (x < DEFAULT_LABEL_WIDTH || x > W) return;
         ctx.strokeStyle = color;
         ctx.lineWidth = 2;
         ctx.setLineDash(dash);
@@ -663,15 +275,15 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
     const getChannelY = (chId: number) => {
       const idx = visibleChannels.findIndex(c => c.id === chId);
       if (idx < 0) return null;
-      const yMid = idx * (CHANNEL_HEIGHT + CHANNEL_GAP) + CHANNEL_HEIGHT / 2 + 4;
+      const yMid = idx * (DEFAULT_CHANNEL_HEIGHT + DEFAULT_CHANNEL_GAP) + DEFAULT_CHANNEL_HEIGHT / 2 + 4;
       if (yMid > H - 14) return null;
       return yMid;
     };
     const drawBubble = (sample: number, chId: number, text: string, color: string) => {
       const y = getChannelY(chId);
       if (y === null) return;
-      const x = LABEL_WIDTH + ((sample - currentPan) / currentZoom) * displayW;
-      if (x < LABEL_WIDTH || x > W) return;
+      const x = DEFAULT_LABEL_WIDTH + ((sample - currentPan) / currentZoom) * displayW;
+      if (x < DEFAULT_LABEL_WIDTH || x > W) return;
       ctx.fillStyle = color;
       ctx.font = "bold 9px monospace";
       ctx.fillText(text, x + 2, y - 8);
@@ -729,7 +341,7 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
     ringRef.current.reset();
     frozenBufRef.current = null;
     // Reset jitter ring
-    jitterBufRef.current = new Uint16Array(JITTER_CAP_SAMPLES);
+    jitterBufRef.current = new Uint16Array(DEFAULT_JITTER_CAP_SAMPLES);
     jitterWriteRef.current = 0;
     readHeadRef.current = 0;
     snapDirtyRef.current = false;
@@ -752,7 +364,7 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
             const s = bps2 === 2
               ? decoded[i*2] | (decoded[i*2+1] << 8)
               : decoded[i];
-            jBuf[jitterWriteRef.current % JITTER_CAP_SAMPLES] = s;
+            jBuf[jitterWriteRef.current % DEFAULT_JITTER_CAP_SAMPLES] = s;
             jitterWriteRef.current++;
           }
         }
@@ -794,10 +406,10 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
     const written = jitterWriteRef.current;
     const bpsFreeze = liveWidthRef.current === 16 ? 2 : 1;
     if (jBuf && written > 0) {
-      const capSamples = Math.min(written, JITTER_CAP_SAMPLES);
+      const capSamples = Math.min(written, DEFAULT_JITTER_CAP_SAMPLES);
       const frozen = new Uint8Array(capSamples * bpsFreeze);
       for (let i = 0; i < capSamples; i++) {
-        const s = jBuf[(written - capSamples + i) % JITTER_CAP_SAMPLES];
+        const s = jBuf[(written - capSamples + i) % DEFAULT_JITTER_CAP_SAMPLES];
         if (bpsFreeze === 2) { frozen[i*2] = s & 0xFF; frozen[i*2+1] = (s >> 8) & 0xFF; }
         else { frozen[i] = s & 0xFF; }
       }
@@ -843,10 +455,10 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
       const written2 = jitterWriteRef.current;
       const bpsF2 = liveWidthRef.current === 16 ? 2 : 1;
       if (jBuf2 && written2 > 0) {
-        const capSamples2 = Math.min(written2, JITTER_CAP_SAMPLES);
+        const capSamples2 = Math.min(written2, DEFAULT_JITTER_CAP_SAMPLES);
         const frozen2 = new Uint8Array(capSamples2 * bpsF2);
         for (let i = 0; i < capSamples2; i++) {
-          const s = jBuf2[(written2 - capSamples2 + i) % JITTER_CAP_SAMPLES];
+          const s = jBuf2[(written2 - capSamples2 + i) % DEFAULT_JITTER_CAP_SAMPLES];
           if (bpsF2 === 2) { frozen2[i*2] = s & 0xFF; frozen2[i*2+1] = (s >> 8) & 0xFF; }
           else { frozen2[i] = s & 0xFF; }
         }
@@ -944,44 +556,29 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
       const bits = Array.from({ length: 16 }, (_, b) => (word >> b) & 1);
       rows.push([i, timeUs, ...bits].join(","));
     }
-    const blob = new Blob([rows.join("\n")], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const now = new Date();
-    const ts = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,"0")}${String(now.getDate()).padStart(2,"0")}-${String(now.getHours()).padStart(2,"0")}${String(now.getMinutes()).padStart(2,"0")}${String(now.getSeconds()).padStart(2,"0")}`;
-    const a = document.createElement("a");
-    a.href = url; a.download = `waveforge-${ts}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadBlob(new Blob([rows.join("\n")], { type: "text/csv" }), `waveforge-${makeTimestamp()}.csv`);
   }, []);
 
   // W2 — Screenshot → project captures folder
-  const saveSnapshot = useCallback(() => {
+  const saveSnapshot = useCallback(async () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    canvas.toBlob((blob) => {
-      if (!blob) return;
-      const reader = new FileReader();
-      reader.onload = () => {
-        const dataUrl = reader.result as string;
-        const name = `waveforge-${Date.now()}.png`;
-        fetch("/api/v1/waveforge/snapshot", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ plugin: "waveforge", value: dataUrl, name, timestamp: Date.now() / 1000, unit: "png", meta: {} })
-        })
-        .then(async r => {
-          if (!r.ok) throw new Error("Snapshot save failed");
-          const j = await r.json();
-          toast.success(`Saved ${j.filename}`);
-          globalBus.emit("workspace.counts.refresh");
-        })
-        .catch(err => {
-          console.error("Snapshot save failed:", err);
-          toast.error("Snapshot save failed");
-        });
-      };
-      reader.readAsDataURL(blob);
-    }, "image/png");
+    try {
+      const dataUrl = await canvasToPngDataUrl(canvas);
+      const name = `waveforge-${Date.now()}.png`;
+      const r = await fetch("/api/v1/waveforge/snapshot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plugin: "waveforge", value: dataUrl, name, timestamp: Date.now() / 1000, unit: "png", meta: {} })
+      });
+      if (!r.ok) throw new Error("Snapshot save failed");
+      const j = await r.json();
+      toast.success(`Saved ${j.filename}`);
+      globalBus.emit("workspace.counts.refresh");
+    } catch (err) {
+      console.error("Snapshot save failed:", err);
+      toast.error("Snapshot save failed");
+    }
   }, []);
 
   // Frozen buffer navigation helpers
@@ -997,7 +594,7 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
   }, [getFrozenTotalSamples]);
 
   const sampleFromX = useCallback((x: number, pan: number, zoom: number, displayW: number) => {
-    return Math.round(pan + ((x - LABEL_WIDTH) / displayW) * zoom);
+    return Math.round(pan + ((x - DEFAULT_LABEL_WIDTH) / displayW) * zoom);
   }, []);
 
   const handleWheel = useCallback((e: React.WheelEvent<HTMLCanvasElement>) => {
@@ -1006,16 +603,16 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
-    const displayW = canvas.width - LABEL_WIDTH;
-    if (x < LABEL_WIDTH) return; // ignore wheel over labels
+    const displayW = canvas.width - DEFAULT_LABEL_WIDTH;
+    if (x < DEFAULT_LABEL_WIDTH) return; // ignore wheel over labels
     const total = getFrozenTotalSamples();
     if (total <= 100) return;
     const zoom = zoomSamplesRef.current ?? total;
     const pan = panSampleRef.current;
     const factor = e.deltaY < 0 ? 0.8 : 1.25; // zoom in on up, out on down
     const newZoom = Math.max(100, Math.min(Math.round(zoom * factor), total));
-    const sampleUnderCursor = pan + ((x - LABEL_WIDTH) / displayW) * zoom;
-    let newPan = Math.round(sampleUnderCursor - ((x - LABEL_WIDTH) / displayW) * newZoom);
+    const sampleUnderCursor = pan + ((x - DEFAULT_LABEL_WIDTH) / displayW) * zoom;
+    let newPan = Math.round(sampleUnderCursor - ((x - DEFAULT_LABEL_WIDTH) / displayW) * newZoom);
     newPan = clampPan(newPan, newZoom);
     setZoomSamples(newZoom === total ? null : newZoom);
     setPanSample(newPan);
@@ -1028,7 +625,7 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
-    const displayW = canvas.width - LABEL_WIDTH;
+    const displayW = canvas.width - DEFAULT_LABEL_WIDTH;
     const total = getFrozenTotalSamples();
     const zoom = zoomSamplesRef.current ?? total;
     const pan = panSampleRef.current;
@@ -1037,8 +634,8 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
     if (showCursorsRef.current) {
       const a = cursorARef.current.sample;
       const b = cursorBRef.current.sample;
-      const aX = LABEL_WIDTH + ((a - pan) / zoom) * displayW;
-      const bX = LABEL_WIDTH + ((b - pan) / zoom) * displayW;
+      const aX = DEFAULT_LABEL_WIDTH + ((a - pan) / zoom) * displayW;
+      const bX = DEFAULT_LABEL_WIDTH + ((b - pan) / zoom) * displayW;
       const hitA = Math.abs(x - aX) < 10;
       const hitB = Math.abs(x - bX) < 10;
       if (hitA || hitB) {
@@ -1061,7 +658,7 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
-    const displayW = canvas.width - LABEL_WIDTH;
+    const displayW = canvas.width - DEFAULT_LABEL_WIDTH;
     const total = getFrozenTotalSamples();
     const zoom = zoomSamplesRef.current ?? total;
     const pan = panSampleRef.current;
