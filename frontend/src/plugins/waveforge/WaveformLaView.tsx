@@ -4,6 +4,8 @@ import { WaveformLaLegacyView } from "./WaveformLaLegacyView";
 import { CollapsibleSection } from "./CollapsibleSection";
 import { ChannelsPanel } from "./ChannelsPanel";
 import { AcquirePanel } from "./AcquirePanel";
+import { LaCursorsPanel } from "./LaCursorsPanel";
+import { LaDecodersPanel } from "./LaDecodersPanel";
 import { loadChannels, saveChannels } from "./laChannelConfig";
 import type { LaChannel } from "./laChannelConfig";
 import type { LaAcquireMode } from "./laAcquireModes";
@@ -14,15 +16,23 @@ interface Props {
   connected: boolean;
 }
 
-// PR2 Phase 4 — DSO-style layout skeleton with Channels, Acquire panels, and
-// a simple acquire-mode toolbar. The state machine is not yet driving the
-// legacy capture loop; that wiring happens in Phase 5/7.
+interface Cursor {
+  sample: number;
+  dragging: boolean;
+}
+
+// PR2 Phase 5 — DSO-style layout skeleton with Channels, Acquire, Cursors,
+// and bottom-docked Decoders panels. The state machine is not yet driving the
+// legacy capture loop; that wiring happens in Phase 7.
 export function WaveformLaView(props: Props) {
   const [channels, setChannels] = useState<LaChannel[]>(loadChannels);
   const [sampleRate, setSampleRate] = useState(12_000_000);
   const [width, setWidth] = useState<8 | 16>(16);
   const [timebaseIdx, setTimebaseIdx] = useState(6);
   const [acquireMode, setAcquireMode] = useState<LaAcquireMode>("stopped");
+  const [showCursors, setShowCursors] = useState(false);
+  const [cursorA, setCursorA] = useState<Cursor>({ sample: 0, dragging: false });
+  const [cursorB, setCursorB] = useState<Cursor>({ sample: 0, dragging: false });
 
   const handleChannelsChange = (next: LaChannel[]) => {
     saveChannels(next);
@@ -69,9 +79,9 @@ export function WaveformLaView(props: Props) {
           <div className="flex-1 rounded border border-fob-border overflow-hidden bg-fob-surface min-h-0 min-w-0 select-none">
             <WaveformLaLegacyView {...props} />
           </div>
-          {/* Placeholder bottom decoders panel */}
-          <div className="h-40 rounded border border-fob-border overflow-hidden bg-fob-surface shrink-0 min-w-0 p-2">
-            <span className="text-fob-text-dim">Decoders panel (Phase 5)</span>
+          {/* Bottom decoders panel */}
+          <div className="h-40 rounded border border-fob-border overflow-hidden bg-fob-surface shrink-0 min-w-0">
+            <LaDecodersPanel frozenBuf={null} sampleRate={sampleRate} running={isRunning} />
           </div>
         </div>
 
@@ -94,7 +104,15 @@ export function WaveformLaView(props: Props) {
             <span className="text-fob-text-dim">Trigger panel (Phase 6)</span>
           </CollapsibleSection>
           <CollapsibleSection title="Cursors">
-            <span className="text-fob-text-dim">Cursors panel (Phase 5)</span>
+            <LaCursorsPanel
+              enabled={showCursors}
+              onToggle={setShowCursors}
+              cursorA={cursorA}
+              cursorB={cursorB}
+              onCursorAChange={setCursorA}
+              onCursorBChange={setCursorB}
+              totalSamples={0}
+            />
           </CollapsibleSection>
         </div>
       </div>
