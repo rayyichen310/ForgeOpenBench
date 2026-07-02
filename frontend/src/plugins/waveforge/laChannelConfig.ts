@@ -76,8 +76,8 @@ export function loadDecoders(): DecoderConfigLoaded {
   } catch { /* ignore */ }
   return {
     tab: "uart", uart: { baud: 115200, ch: 0 },
-    i2c: { scl: 0, sda: 1, addrBits: 7 },
-    spi: { mosi: 0, miso: 1, sck: 2, cs: 3, mode: 0, bits: 8, csActiveLow: true },
+    i2c: { scl: 1, sda: 2, addrBits: 7 },
+    spi: { mosi: 3, miso: 4, sck: 5, cs: 6, mode: 0, bits: 8, csActiveLow: true },
   };
 }
 

@@ -12,12 +12,6 @@ import { makeTimestamp, downloadBlob, canvasToPngDataUrl } from "./exportUtils";
 
 interface Cursor { sample: number; dragging: boolean; }
 
-const CHANNEL_HEIGHT = DEFAULT_CHANNEL_HEIGHT;
-const CHANNEL_GAP    = DEFAULT_CHANNEL_GAP;
-const LABEL_WIDTH    = DEFAULT_LABEL_WIDTH;
-const RING_CAPACITY  = DEFAULT_RING_CAPACITY;
-const JITTER_CAP_SAMPLES = DEFAULT_JITTER_CAP_SAMPLES;
-
 
 interface Props {
   transport: UsbTransport;
@@ -29,7 +23,7 @@ const BAUDS = DEFAULT_BAUDS;
 
 export function WaveformLaView({ transport, isActive, connected }: Props) {
   const canvasRef    = useRef<HTMLCanvasElement>(null);
-  const ringRef      = useRef(new RingBuffer(RING_CAPACITY));
+  const ringRef      = useRef(new RingBuffer(DEFAULT_RING_CAPACITY));
   const frozenBufRef = useRef<Uint8Array | null>(null);
   const runningRef   = useRef(false);
   const rafRef       = useRef<number>(0);
@@ -104,7 +98,7 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
     const bps = liveWidthRef.current === 16 ? 2 : 1;
     const rate = liveRateRef.current;
     const divCount = 10;
-    const displayW = W - LABEL_WIDTH;
+    const displayW = W - DEFAULT_LABEL_WIDTH;
     const isLive = runningRef.current;
 
     // Live: all accumulated data up to MAX_LIVE_WINDOW_S, expands as chunks arrive
@@ -128,7 +122,7 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
         const count = readHead - winStart;
         const dstOff = (maxSamples - count) * bps; // right-align in buffer
         for (let i = 0; i < count; i++) {
-          const s = jBuf[(winStart + i) % JITTER_CAP_SAMPLES];
+          const s = jBuf[(winStart + i) % DEFAULT_JITTER_CAP_SAMPLES];
           if (bps === 2) { tmpBytes[dstOff + i*2] = s & 0xFF; tmpBytes[dstOff + i*2+1] = (s >> 8) & 0xFF; }
           else { tmpBytes[dstOff + i] = s & 0xFF; }
         }
@@ -158,14 +152,14 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
     ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--fob-border').trim();
     ctx.lineWidth = 1;
     for (let i = 0; i <= divCount; i++) {
-      const x = LABEL_WIDTH + (i * displayW) / divCount;
+      const x = DEFAULT_LABEL_WIDTH + (i * displayW) / divCount;
       ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
     }
 
     if (buf.length === 0) {
       ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--fob-text-dim').trim();
       ctx.font = "11px monospace";
-      ctx.fillText("No data — press RUN to capture", LABEL_WIDTH + 12, H / 2);
+      ctx.fillText("No data — press RUN to capture", DEFAULT_LABEL_WIDTH + 12, H / 2);
       return;
     }
 
@@ -178,10 +172,10 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
     const visibleChannels = channels.filter(c => c.visible);
 
     visibleChannels.forEach((ch, idx) => {
-      const yMid = idx * (CHANNEL_HEIGHT + CHANNEL_GAP) + CHANNEL_HEIGHT / 2 + 4;
+      const yMid = idx * (DEFAULT_CHANNEL_HEIGHT + DEFAULT_CHANNEL_GAP) + DEFAULT_CHANNEL_HEIGHT / 2 + 4;
       if (yMid > H - 14) return;
-      const highY = yMid - CHANNEL_HEIGHT / 3;
-      const lowY  = yMid + CHANNEL_HEIGHT / 3;
+      const highY = yMid - DEFAULT_CHANNEL_HEIGHT / 3;
+      const lowY  = yMid + DEFAULT_CHANNEL_HEIGHT / 3;
 
       ctx.fillStyle = ch.color;
       ctx.font = "9px monospace";
@@ -206,10 +200,11 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
         let bit: 0 | 1 = 0;
         if (liveWidthRef.current === 16) {
           bit = hwCh < 8 ? ((buf[byteIdx] >> hwCh) & 1) as 0|1 : ((buf[byteIdx + 1] >> (hwCh - 8)) & 1) as 0|1;
+        } else {
           bit = ((buf[byteIdx] >> hwCh) & 1) as 0|1;
         }
 
-        const x = LABEL_WIDTH + px;
+        const x = DEFAULT_LABEL_WIDTH + px;
         const y = bit ? highY : lowY;
 
         if (prevState !== null && prevState !== bit) {
@@ -241,7 +236,7 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
       if (i === 0 && offsetS === 0) continue;
       const frac = i / divCount;
       if (isLive && !windowFilled && frac < (1 - filledFrac)) continue;
-      const x = LABEL_WIDTH + (i * displayW) / divCount;
+      const x = DEFAULT_LABEL_WIDTH + (i * displayW) / divCount;
       const tS = offsetS + i * divS;
       const tMs = tS * 1000;
       const label = tMs < 1
@@ -257,10 +252,10 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
       const totalSamples = Math.floor((frozenBufRef.current?.length ?? ringRef.current.count) / bps);
       const zoom = Math.max(1, zoomSamplesRef.current ?? totalSamples);
       const pan = panSampleRef.current;
-      const sampleToX = (s: number) => LABEL_WIDTH + ((s - pan) / zoom) * displayW;
+      const sampleToX = (s: number) => DEFAULT_LABEL_WIDTH + ((s - pan) / zoom) * displayW;
       const drawCursorLine = (s: number, color: string, label: string, dash: number[]) => {
         const x = sampleToX(s);
-        if (x < LABEL_WIDTH || x > W) return;
+        if (x < DEFAULT_LABEL_WIDTH || x > W) return;
         ctx.strokeStyle = color;
         ctx.lineWidth = 2;
         ctx.setLineDash(dash);
@@ -280,15 +275,15 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
     const getChannelY = (chId: number) => {
       const idx = visibleChannels.findIndex(c => c.id === chId);
       if (idx < 0) return null;
-      const yMid = idx * (CHANNEL_HEIGHT + CHANNEL_GAP) + CHANNEL_HEIGHT / 2 + 4;
+      const yMid = idx * (DEFAULT_CHANNEL_HEIGHT + DEFAULT_CHANNEL_GAP) + DEFAULT_CHANNEL_HEIGHT / 2 + 4;
       if (yMid > H - 14) return null;
       return yMid;
     };
     const drawBubble = (sample: number, chId: number, text: string, color: string) => {
       const y = getChannelY(chId);
       if (y === null) return;
-      const x = LABEL_WIDTH + ((sample - currentPan) / currentZoom) * displayW;
-      if (x < LABEL_WIDTH || x > W) return;
+      const x = DEFAULT_LABEL_WIDTH + ((sample - currentPan) / currentZoom) * displayW;
+      if (x < DEFAULT_LABEL_WIDTH || x > W) return;
       ctx.fillStyle = color;
       ctx.font = "bold 9px monospace";
       ctx.fillText(text, x + 2, y - 8);
@@ -346,7 +341,7 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
     ringRef.current.reset();
     frozenBufRef.current = null;
     // Reset jitter ring
-    jitterBufRef.current = new Uint16Array(JITTER_CAP_SAMPLES);
+    jitterBufRef.current = new Uint16Array(DEFAULT_JITTER_CAP_SAMPLES);
     jitterWriteRef.current = 0;
     readHeadRef.current = 0;
     snapDirtyRef.current = false;
@@ -369,7 +364,7 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
             const s = bps2 === 2
               ? decoded[i*2] | (decoded[i*2+1] << 8)
               : decoded[i];
-            jBuf[jitterWriteRef.current % JITTER_CAP_SAMPLES] = s;
+            jBuf[jitterWriteRef.current % DEFAULT_JITTER_CAP_SAMPLES] = s;
             jitterWriteRef.current++;
           }
         }
@@ -411,10 +406,10 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
     const written = jitterWriteRef.current;
     const bpsFreeze = liveWidthRef.current === 16 ? 2 : 1;
     if (jBuf && written > 0) {
-      const capSamples = Math.min(written, JITTER_CAP_SAMPLES);
+      const capSamples = Math.min(written, DEFAULT_JITTER_CAP_SAMPLES);
       const frozen = new Uint8Array(capSamples * bpsFreeze);
       for (let i = 0; i < capSamples; i++) {
-        const s = jBuf[(written - capSamples + i) % JITTER_CAP_SAMPLES];
+        const s = jBuf[(written - capSamples + i) % DEFAULT_JITTER_CAP_SAMPLES];
         if (bpsFreeze === 2) { frozen[i*2] = s & 0xFF; frozen[i*2+1] = (s >> 8) & 0xFF; }
         else { frozen[i] = s & 0xFF; }
       }
@@ -460,10 +455,10 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
       const written2 = jitterWriteRef.current;
       const bpsF2 = liveWidthRef.current === 16 ? 2 : 1;
       if (jBuf2 && written2 > 0) {
-        const capSamples2 = Math.min(written2, JITTER_CAP_SAMPLES);
+        const capSamples2 = Math.min(written2, DEFAULT_JITTER_CAP_SAMPLES);
         const frozen2 = new Uint8Array(capSamples2 * bpsF2);
         for (let i = 0; i < capSamples2; i++) {
-          const s = jBuf2[(written2 - capSamples2 + i) % JITTER_CAP_SAMPLES];
+          const s = jBuf2[(written2 - capSamples2 + i) % DEFAULT_JITTER_CAP_SAMPLES];
           if (bpsF2 === 2) { frozen2[i*2] = s & 0xFF; frozen2[i*2+1] = (s >> 8) & 0xFF; }
           else { frozen2[i] = s & 0xFF; }
         }
@@ -599,7 +594,7 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
   }, [getFrozenTotalSamples]);
 
   const sampleFromX = useCallback((x: number, pan: number, zoom: number, displayW: number) => {
-    return Math.round(pan + ((x - LABEL_WIDTH) / displayW) * zoom);
+    return Math.round(pan + ((x - DEFAULT_LABEL_WIDTH) / displayW) * zoom);
   }, []);
 
   const handleWheel = useCallback((e: React.WheelEvent<HTMLCanvasElement>) => {
@@ -608,16 +603,16 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
-    const displayW = canvas.width - LABEL_WIDTH;
-    if (x < LABEL_WIDTH) return; // ignore wheel over labels
+    const displayW = canvas.width - DEFAULT_LABEL_WIDTH;
+    if (x < DEFAULT_LABEL_WIDTH) return; // ignore wheel over labels
     const total = getFrozenTotalSamples();
     if (total <= 100) return;
     const zoom = zoomSamplesRef.current ?? total;
     const pan = panSampleRef.current;
     const factor = e.deltaY < 0 ? 0.8 : 1.25; // zoom in on up, out on down
     const newZoom = Math.max(100, Math.min(Math.round(zoom * factor), total));
-    const sampleUnderCursor = pan + ((x - LABEL_WIDTH) / displayW) * zoom;
-    let newPan = Math.round(sampleUnderCursor - ((x - LABEL_WIDTH) / displayW) * newZoom);
+    const sampleUnderCursor = pan + ((x - DEFAULT_LABEL_WIDTH) / displayW) * zoom;
+    let newPan = Math.round(sampleUnderCursor - ((x - DEFAULT_LABEL_WIDTH) / displayW) * newZoom);
     newPan = clampPan(newPan, newZoom);
     setZoomSamples(newZoom === total ? null : newZoom);
     setPanSample(newPan);
@@ -630,7 +625,7 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
-    const displayW = canvas.width - LABEL_WIDTH;
+    const displayW = canvas.width - DEFAULT_LABEL_WIDTH;
     const total = getFrozenTotalSamples();
     const zoom = zoomSamplesRef.current ?? total;
     const pan = panSampleRef.current;
@@ -639,8 +634,8 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
     if (showCursorsRef.current) {
       const a = cursorARef.current.sample;
       const b = cursorBRef.current.sample;
-      const aX = LABEL_WIDTH + ((a - pan) / zoom) * displayW;
-      const bX = LABEL_WIDTH + ((b - pan) / zoom) * displayW;
+      const aX = DEFAULT_LABEL_WIDTH + ((a - pan) / zoom) * displayW;
+      const bX = DEFAULT_LABEL_WIDTH + ((b - pan) / zoom) * displayW;
       const hitA = Math.abs(x - aX) < 10;
       const hitB = Math.abs(x - bX) < 10;
       if (hitA || hitB) {
@@ -663,7 +658,7 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
-    const displayW = canvas.width - LABEL_WIDTH;
+    const displayW = canvas.width - DEFAULT_LABEL_WIDTH;
     const total = getFrozenTotalSamples();
     const zoom = zoomSamplesRef.current ?? total;
     const pan = panSampleRef.current;
