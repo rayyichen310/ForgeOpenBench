@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import type { UsbTransport } from "./UsbTransport";
 import { WaveformLaLegacyView } from "./WaveformLaLegacyView";
 import { CollapsibleSection } from "./CollapsibleSection";
@@ -6,6 +6,7 @@ import { ChannelsPanel } from "./ChannelsPanel";
 import { AcquirePanel } from "./AcquirePanel";
 import { loadChannels, saveChannels } from "./laChannelConfig";
 import type { LaChannel } from "./laChannelConfig";
+import type { LaAcquireMode } from "./laAcquireModes";
 
 interface Props {
   transport: UsbTransport;
@@ -13,26 +14,52 @@ interface Props {
   connected: boolean;
 }
 
-// PR2 Phase 3 — DSO-style layout skeleton with Channels and Acquire panels.
-// Trigger, cursors, bottom-docked decoders, and the acquire state machine are
-// wired in subsequent phases. The legacy view remains embedded until the new
-// canvas is ready.
+// PR2 Phase 4 — DSO-style layout skeleton with Channels, Acquire panels, and
+// a simple acquire-mode toolbar. The state machine is not yet driving the
+// legacy capture loop; that wiring happens in Phase 5/7.
 export function WaveformLaView(props: Props) {
   const [channels, setChannels] = useState<LaChannel[]>(loadChannels);
   const [sampleRate, setSampleRate] = useState(12_000_000);
   const [width, setWidth] = useState<8 | 16>(16);
   const [timebaseIdx, setTimebaseIdx] = useState(6);
+  const [acquireMode, setAcquireMode] = useState<LaAcquireMode>("stopped");
 
   const handleChannelsChange = (next: LaChannel[]) => {
     saveChannels(next);
     setChannels(next);
   };
 
+  const isRunning = acquireMode === "running" || acquireMode === "single-armed";
+  const handleRun = useCallback(() => setAcquireMode("running"), []);
+  const handleStop = useCallback(() => setAcquireMode("stopped"), []);
+  const handleSingle = useCallback(() => setAcquireMode("single-armed"), []);
+
   return (
     <div className="flex flex-col h-full bg-fob-surface text-fob-text font-mono text-xs select-none">
-      {/* Placeholder toolbar — replaced with LA AcquireToolbar in Phase 4 */}
+      {/* Acquire toolbar */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-fob-border bg-fob-surface shrink-0">
-        <span className="text-fob-text-dim">LA Toolbar (Phase 4)</span>
+        <button
+          onClick={handleRun}
+          disabled={!props.connected || isRunning}
+          className={`px-3 py-1 rounded font-bold ${isRunning ? "bg-fob-surface text-fob-text-dim" : "bg-fob-green hover:bg-fob-green/80"}`}
+        >
+          Run
+        </button>
+        <button
+          onClick={handleStop}
+          disabled={!isRunning}
+          className={`px-3 py-1 rounded font-bold ${isRunning ? "bg-fob-red hover:bg-fob-red/80" : "bg-fob-surface text-fob-text-dim"}`}
+        >
+          Stop
+        </button>
+        <button
+          onClick={handleSingle}
+          disabled={!props.connected || isRunning}
+          className="px-3 py-1 rounded font-bold bg-fob-orange hover:bg-fob-orange/80 disabled:bg-fob-surface disabled:text-fob-text-dim"
+        >
+          Single
+        </button>
+        <span className="text-fob-text-dim">{acquireMode}</span>
       </div>
 
       {/* Main area: canvas + right panel */}
