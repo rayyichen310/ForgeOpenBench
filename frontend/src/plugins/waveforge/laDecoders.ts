@@ -65,8 +65,8 @@ export function decodeI2C(
   let isAddr = true;
 
   while (i < samples.length - 1) {
-    // START: SDA falling while SCL high
-    if (scl(i) === 1 && sda(i) === 1 && sda(i + 1) === 0) {
+    // START: SDA falling while SCL high (SCL must stay high across both samples)
+    if (scl(i) === 1 && scl(i + 1) === 1 && sda(i) === 1 && sda(i + 1) === 0) {
       const type = inFrame ? "repeated-start" : "start";
       rows.push({ startSample: i, endSample: i, ts: i / sampleRate, type });
       inFrame = true;
@@ -76,8 +76,8 @@ export function decodeI2C(
       i++;
       continue;
     }
-    // STOP: SDA rising while SCL high
-    if (inFrame && scl(i) === 1 && sda(i) === 0 && sda(i + 1) === 1) {
+    // STOP: SDA rising while SCL high (SCL must stay high across both samples)
+    if (inFrame && scl(i) === 1 && scl(i + 1) === 1 && sda(i) === 0 && sda(i + 1) === 1) {
       rows.push({ startSample: i, endSample: i, ts: i / sampleRate, type: "stop" });
       inFrame = false;
       isAddr = true;
