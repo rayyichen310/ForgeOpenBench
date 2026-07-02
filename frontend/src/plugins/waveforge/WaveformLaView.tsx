@@ -3,6 +3,7 @@ import type { UsbTransport } from "./UsbTransport";
 import { WaveformLaLegacyView } from "./WaveformLaLegacyView";
 import { CollapsibleSection } from "./CollapsibleSection";
 import { ChannelsPanel } from "./ChannelsPanel";
+import { AcquirePanel } from "./AcquirePanel";
 import { loadChannels, saveChannels } from "./laChannelConfig";
 import type { LaChannel } from "./laChannelConfig";
 
@@ -12,12 +13,15 @@ interface Props {
   connected: boolean;
 }
 
-// PR2 Phase 2 — DSO-style layout skeleton.
-// ChannelsPanel is wired in the right panel. Acquire, trigger, cursors, and
-// bottom-docked decoders will be added in subsequent phases. The legacy view
-// remains embedded in the canvas area until the new canvas is ready.
+// PR2 Phase 3 — DSO-style layout skeleton with Channels and Acquire panels.
+// Trigger, cursors, bottom-docked decoders, and the acquire state machine are
+// wired in subsequent phases. The legacy view remains embedded until the new
+// canvas is ready.
 export function WaveformLaView(props: Props) {
   const [channels, setChannels] = useState<LaChannel[]>(loadChannels);
+  const [sampleRate, setSampleRate] = useState(12_000_000);
+  const [width, setWidth] = useState<8 | 16>(16);
+  const [timebaseIdx, setTimebaseIdx] = useState(6);
 
   const handleChannelsChange = (next: LaChannel[]) => {
     saveChannels(next);
@@ -50,7 +54,14 @@ export function WaveformLaView(props: Props) {
             <ChannelsPanel channels={channels} onChange={handleChannelsChange} />
           </CollapsibleSection>
           <CollapsibleSection title="Acquire">
-            <span className="text-fob-text-dim">Acquire panel (Phase 3)</span>
+            <AcquirePanel
+              sampleRate={sampleRate}
+              width={width}
+              timebaseIdx={timebaseIdx}
+              onSampleRateChange={setSampleRate}
+              onWidthChange={setWidth}
+              onTimebaseChange={setTimebaseIdx}
+            />
           </CollapsibleSection>
           <CollapsibleSection title="Trigger">
             <span className="text-fob-text-dim">Trigger panel (Phase 6)</span>
