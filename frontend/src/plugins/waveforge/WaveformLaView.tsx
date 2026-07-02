@@ -8,6 +8,7 @@ import { MAX_TICKER, decodeUartChunk, decodeI2C, decodeSPI, generateLaTestPatter
 import type { TickerRow, DecoderTab } from "./laDecoders";
 import { DEFAULT_CHANNEL_HEIGHT, DEFAULT_CHANNEL_GAP, DEFAULT_LABEL_WIDTH, DEFAULT_RING_CAPACITY, DEFAULT_JITTER_CAP_SAMPLES, SAMPLE_RATES, TIMEBASE_PRESETS, CHANNEL_COLORS, DEFAULT_BAUDS, loadChannels, saveChannels, loadDecoders, saveDecoders } from "./laChannelConfig";
 import type { LaChannel } from "./laChannelConfig";
+import { makeTimestamp, downloadBlob, canvasToPngDataUrl } from "./exportUtils";
 
 interface Cursor { sample: number; dragging: boolean; }
 
@@ -560,44 +561,29 @@ export function WaveformLaView({ transport, isActive, connected }: Props) {
       const bits = Array.from({ length: 16 }, (_, b) => (word >> b) & 1);
       rows.push([i, timeUs, ...bits].join(","));
     }
-    const blob = new Blob([rows.join("\n")], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const now = new Date();
-    const ts = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,"0")}${String(now.getDate()).padStart(2,"0")}-${String(now.getHours()).padStart(2,"0")}${String(now.getMinutes()).padStart(2,"0")}${String(now.getSeconds()).padStart(2,"0")}`;
-    const a = document.createElement("a");
-    a.href = url; a.download = `waveforge-${ts}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadBlob(new Blob([rows.join("\n")], { type: "text/csv" }), `waveforge-${makeTimestamp()}.csv`);
   }, []);
 
   // W2 — Screenshot → project captures folder
-  const saveSnapshot = useCallback(() => {
+  const saveSnapshot = useCallback(async () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    canvas.toBlob((blob) => {
-      if (!blob) return;
-      const reader = new FileReader();
-      reader.onload = () => {
-        const dataUrl = reader.result as string;
-        const name = `waveforge-${Date.now()}.png`;
-        fetch("/api/v1/waveforge/snapshot", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ plugin: "waveforge", value: dataUrl, name, timestamp: Date.now() / 1000, unit: "png", meta: {} })
-        })
-        .then(async r => {
-          if (!r.ok) throw new Error("Snapshot save failed");
-          const j = await r.json();
-          toast.success(`Saved ${j.filename}`);
-          globalBus.emit("workspace.counts.refresh");
-        })
-        .catch(err => {
-          console.error("Snapshot save failed:", err);
-          toast.error("Snapshot save failed");
-        });
-      };
-      reader.readAsDataURL(blob);
-    }, "image/png");
+    try {
+      const dataUrl = await canvasToPngDataUrl(canvas);
+      const name = `waveforge-${Date.now()}.png`;
+      const r = await fetch("/api/v1/waveforge/snapshot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plugin: "waveforge", value: dataUrl, name, timestamp: Date.now() / 1000, unit: "png", meta: {} })
+      });
+      if (!r.ok) throw new Error("Snapshot save failed");
+      const j = await r.json();
+      toast.success(`Saved ${j.filename}`);
+      globalBus.emit("workspace.counts.refresh");
+    } catch (err) {
+      console.error("Snapshot save failed:", err);
+      toast.error("Snapshot save failed");
+    }
   }, []);
 
   // Frozen buffer navigation helpers
