@@ -4,6 +4,7 @@ import {
   decodeI2C,
   decodeSPI,
   generateLaTestPattern,
+  makeFakeUartSignal,
   MAX_TICKER,
 } from "./laDecoders";
 
@@ -133,6 +134,63 @@ describe("decodeUartChunk", () => {
   it("returns empty for an idle-high line", () => {
     const sig = Uint8Array.from(new Array(1000).fill(1));
     expect(decodeUartChunk(sig, RATE, BAUD, 0)).toHaveLength(0);
+  });
+
+  it("decodes even parity correctly", () => {
+    const { samples } = makeFakeUartSignal("A", RATE, BAUD, 0, "even", 1);
+    const rows = decodeUartChunk(samples, RATE, BAUD, 0, 0, 8, "even", 1);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].byte).toBe(0x41);
+    expect(rows[0].parityOk).toBe(true);
+    expect(rows[0].error).toBe(false);
+  });
+
+  it("decodes odd parity correctly", () => {
+    const { samples } = makeFakeUartSignal("!", RATE, BAUD, 0, "odd", 1);
+    const rows = decodeUartChunk(samples, RATE, BAUD, 0, 0, 8, "odd", 1);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].byte).toBe(0x21);
+    expect(rows[0].parityOk).toBe(true);
+    expect(rows[0].error).toBe(false);
+  });
+
+  it("flags a parity error", () => {
+    const { samples } = makeFakeUartSignal("A", RATE, BAUD, 0, "even", 1);
+    const rows = decodeUartChunk(samples, RATE, BAUD, 0, 0, 8, "odd", 1);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].parityOk).toBe(false);
+    expect(rows[0].error).toBe(true);
+  });
+
+  it("decodes with inverted logic", () => {
+    const { samples } = makeFakeUartSignal("Z", RATE, BAUD, 0, "none", 1);
+    const inverted = samples.map(b => b ^ 1);
+    const rows = decodeUartChunk(inverted, RATE, BAUD, 0, 0, 8, "none", 1, true);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].byte).toBe(0x5a);
+  });
+
+  it("decodes 7-bit data", () => {
+    // 7-bit UART byte: start, 7 data bits (LSB-first), stop
+    const bits: number[] = [];
+    const push = (v: number, n: number) => { for (let i = 0; i < n; i++) bits.push(v); };
+    push(1, SPB * 4); // idle
+    const byte = 0x55; // 0b1010101
+    push(0, SPB); // start
+    for (let i = 0; i < 7; i++) push((byte >> i) & 1, SPB);
+    push(1, SPB); // stop
+    push(1, SPB * 4); // trailing idle
+    const sig = Uint8Array.from(bits.map(v => v << 0));
+    const rows = decodeUartChunk(sig, RATE, BAUD, 0, 0, 7);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].byte).toBe(0x55);
+  });
+
+  it("decodes 2 stop bits", () => {
+    const { samples } = makeFakeUartSignal("B", RATE, BAUD, 0, "none", 2);
+    const rows = decodeUartChunk(samples, RATE, BAUD, 0, 0, 8, "none", 2);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].byte).toBe(0x42);
   });
 });
 

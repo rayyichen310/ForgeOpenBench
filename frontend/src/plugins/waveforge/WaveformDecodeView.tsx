@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { UsbTransport } from "./UsbTransport";
 import type { UsbDataChunk } from "./usbTypes";
+import { decodeUartChunk, makeFakeUartSignal } from "./laDecoders";
+import type { TickerRow } from "./laDecoders";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -18,112 +20,39 @@ interface DecodeResult {
   sampleRate: number;
 }
 
-// ---------------------------------------------------------------------------
-// UART decoder (pure function — works on Uint8Array of packed LA bits)
-// ---------------------------------------------------------------------------
-
-function decodeUart(
+function buildDecodeResult(
   samples: Uint8Array,
   sampleRate: number,
   baud: number,
-  channel: number,        // 0-15, which LA channel bit
-  dataBits: number,       // 7 or 8
+  channel: number,
+  dataBits: number,
   parity: "none" | "even" | "odd",
-  stopBits: number,       // 1 or 2
+  stopBits: number,
   invertLogic: boolean,
 ): DecodeResult {
-  const samplesPerBit = sampleRate / baud;
-  const frames: UartFrame[] = [];
-  const bitOf = (s: number) => {
-    const byte = samples[s] ?? 0;
-    const raw = (byte >> channel) & 1;
-    return invertLogic ? raw ^ 1 : raw;
+  const rows = decodeUartChunk(samples, sampleRate, baud, channel, 0, dataBits, parity, stopBits, invertLogic);
+  return {
+    sampleRate,
+    frames: rows.map((r: TickerRow) => ({
+      startSample: r.sample,
+      byte: r.byte,
+      parityOk: r.parityOk ?? null,
+      error: r.error,
+    })),
   };
-
-  let i = 0;
-  while (i < samples.length - 1) {
-    // Look for falling edge (start bit: idle=1 → 0)
-    if (bitOf(i) === 1 && bitOf(i + 1) === 0) {
-      const frameStart = i + 1;  // first sample of start bit
-      // sampleAt(n): centre of bit n, where n=0 is start bit, n=1..8 are data bits
-      const sampleAt = (n: number) =>
-        bitOf(Math.max(0, Math.min(samples.length - 1,
-          Math.round(frameStart + (n + 0.5) * samplesPerBit))));
-
-      // Verify start bit centre is low
-      if (sampleAt(0) !== 0) { i++; continue; }
-
-      // Read data bits LSB-first: bit0=n1, bit1=n2 ... bit7=n8
-      let value = 0;
-      for (let b = 0; b < dataBits; b++) {
-        value |= sampleAt(b + 1) << b;
-      }
-      const sample = sampleAt;  // alias for parity/stop below
-
-      // Parity bit
-      let parityOk: boolean | null = null;
-      let parityOffset = 0;
-      if (parity !== "none") {
-        const parBit = sample(dataBits + 1);  // +1 for start bit at n=0
-        parityOffset = 1;
-        const ones = value.toString(2).split("").filter(c => c === "1").length;
-        parityOk = parity === "even" ? (ones + parBit) % 2 === 0 : (ones + parBit) % 2 === 1;
-      }
-
-      // Stop bit(s): at n = 1(start) + dataBits + parityOffset
-      const stopBit = sample(1 + dataBits + parityOffset);
-      const error = stopBit !== 1;
-
-      frames.push({ startSample: frameStart, byte: value, parityOk, error });
-
-      // Advance past this frame (skip start + data + parity + stop bits)
-      i = Math.round(frameStart + (1 + dataBits + parityOffset + stopBits) * samplesPerBit);
-    } else {
-      i++;
-    }
-  }
-  return { frames, sampleRate };
 }
 
-// ---------------------------------------------------------------------------
-// Fake signal generator: synthesizes UART as packed LA bits
-// ---------------------------------------------------------------------------
-
-function makeFakeUartSignal(
+function makeFakeUartSignalCompat(
   text: string,
   sampleRate: number,
   baud: number,
   channel: number,
   parity: "none" | "even" | "odd",
+  stopBits: number,
 ): { samples: Uint8Array; sampleRate: number } {
-  const samplesPerBit = Math.round(sampleRate / baud);
-  const bits: number[] = [];
-
-  const pushBit = (b: number, count = 1) => {
-    for (let i = 0; i < count * samplesPerBit; i++) bits.push(b);
-  };
-
-  // Idle high for 2 bit-periods
-  pushBit(1, 2);
-
-  for (const ch of text) {
-    const value = ch.charCodeAt(0);
-    pushBit(0);  // start bit
-    for (let b = 0; b < 8; b++) pushBit((value >> b) & 1);  // LSB first
-    if (parity !== "none") {
-      const ones = value.toString(2).split("").filter(c => c === "1").length;
-      pushBit(parity === "even" ? ones % 2 : (ones + 1) % 2);
-    }
-    pushBit(1);  // stop bit
-    pushBit(1);  // inter-byte gap
-  }
-
-  pushBit(1, 2);  // trailing idle
-
-  const samples = new Uint8Array(bits.length);
-  for (let i = 0; i < bits.length; i++) samples[i] = bits[i] << channel;
-  return { samples, sampleRate };
+  return makeFakeUartSignal(text, sampleRate, baud, channel, parity, stopBits);
 }
+
 
 // ---------------------------------------------------------------------------
 // Component
@@ -185,7 +114,7 @@ export function WaveformDecodeView({ transport, isActive, connected }: Props) {
     let sampleRate: number;
 
     if (source === "fake") {
-      const gen = makeFakeUartSignal(fakeText, baud * 16, baud, channel, parity);
+      const gen = makeFakeUartSignalCompat(fakeText, baud * 16, baud, channel, parity, stopBits);
       samples = gen.samples;
       sampleRate = gen.sampleRate;
     } else {
@@ -194,7 +123,7 @@ export function WaveformDecodeView({ transport, isActive, connected }: Props) {
       sampleRate = liveRateRef.current;
     }
 
-    const r = decodeUart(samples, sampleRate, baud, channel, dataBits, parity, stopBits, invertLogic);
+    const r = buildDecodeResult(samples, sampleRate, baud, channel, dataBits, parity, stopBits, invertLogic);
     setResult(r);
     setStatus(r.frames.length
       ? `Decoded ${r.frames.length} frame${r.frames.length !== 1 ? "s" : ""}`
@@ -218,7 +147,7 @@ export function WaveformDecodeView({ transport, isActive, connected }: Props) {
       setStatus(`Captured ${liveBufRef.current.length.toLocaleString()} samples — decoding...`);
       await new Promise(r => setTimeout(r, 100));  // let last chunks arrive
       if (!liveBufRef.current.length) { setStatus("Capture ran but no data arrived — device may not be sending"); setStatusErr(true); return; }
-      const r = decodeUart(liveBufRef.current, liveRateRef.current, baud, channel, dataBits, parity, stopBits, invertLogic);
+      const r = buildDecodeResult(liveBufRef.current, liveRateRef.current, baud, channel, dataBits, parity, stopBits, invertLogic);
       setResult(r);
       setStatusErr(r.frames.length === 0);
       setStatus(r.frames.length

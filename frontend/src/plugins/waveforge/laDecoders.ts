@@ -5,7 +5,7 @@
 
 export const MAX_TICKER = 200; // max ticker rows to keep
 
-export interface TickerRow { ts: number; byte: number; sample: number; error: boolean; }
+export interface TickerRow { ts: number; byte: number; sample: number; error: boolean; parityOk?: boolean; }
 
 export interface I2CFrame {
   startSample: number;
@@ -28,11 +28,22 @@ export interface SPIFrame {
 export type DecoderTab = "uart" | "i2c" | "spi";
 
 export function decodeUartChunk(
-  samples: Uint8Array, sampleRate: number, baud: number, channel: number, baseSample = 0
+  samples: Uint8Array,
+  sampleRate: number,
+  baud: number,
+  channel: number,
+  baseSample = 0,
+  dataBits = 8,
+  parity: "none" | "even" | "odd" = "none",
+  stopBits = 1,
+  invertLogic = false
 ): TickerRow[] {
   const spb = sampleRate / baud;
   const rows: TickerRow[] = [];
-  const bit = (s: number) => (samples[Math.max(0, Math.min(samples.length-1, s))] >> channel) & 1;
+  const bit = (s: number) => {
+    const raw = (samples[Math.max(0, Math.min(samples.length - 1, s))] >> channel) & 1;
+    return invertLogic ? raw ^ 1 : raw;
+  };
   let i = 0;
   while (i < samples.length - 1) {
     if (bit(i) === 1 && bit(i + 1) === 0) {
@@ -40,14 +51,59 @@ export function decodeUartChunk(
       const at = (n: number) => bit(Math.round(fs + (n + 0.5) * spb));
       if (at(0) !== 0) { i++; continue; }
       let v = 0;
-      for (let b = 0; b < 8; b++) v |= at(b + 1) << b;
-      const stop = at(9);
+      for (let b = 0; b < dataBits; b++) v |= at(b + 1) << b;
+
+      let parityOffset = 0;
+      let parityOk: boolean | undefined = undefined;
+      if (parity !== "none") {
+        parityOffset = 1;
+        const parBit = at(dataBits + 1);
+        const ones = v.toString(2).split("").filter(c => c === "1").length;
+        const expectedParity = parity === "even" ? (ones % 2 === 0 ? 1 : 0) : (ones % 2 === 1 ? 1 : 0);
+        parityOk = parBit === expectedParity;
+      }
+
+      const stopBit = at(1 + dataBits + parityOffset);
+      const error = stopBit !== 1 || parityOk === false;
       const absSample = baseSample + fs;
-      rows.push({ ts: absSample / sampleRate, byte: v, sample: absSample, error: stop !== 1 });
-      i = Math.round(fs + 10 * spb);
+      rows.push({ ts: absSample / sampleRate, byte: v, sample: absSample, error, parityOk });
+      i = Math.round(fs + (1 + dataBits + parityOffset + stopBits) * spb);
     } else { i++; }
   }
   return rows;
+}
+
+export function makeFakeUartSignal(
+  text: string,
+  sampleRate: number,
+  baud: number,
+  channel: number,
+  parity: "none" | "even" | "odd" = "none",
+  stopBits = 1
+): { samples: Uint8Array; sampleRate: number } {
+  const samplesPerBit = Math.round(sampleRate / baud);
+  const bits: number[] = [];
+  const pushBit = (b: number, count = 1) => {
+    for (let i = 0; i < count * samplesPerBit; i++) bits.push(b);
+  };
+
+  pushBit(1, 2); // idle
+  for (const ch of text) {
+    const value = ch.charCodeAt(0);
+    pushBit(0); // start bit
+    for (let b = 0; b < 8; b++) pushBit((value >> b) & 1); // LSB first
+    if (parity !== "none") {
+      const ones = value.toString(2).split("").filter(c => c === "1").length;
+      pushBit(parity === "even" ? (ones % 2 === 0 ? 1 : 0) : (ones % 2 === 1 ? 1 : 0));
+    }
+    pushBit(1, stopBits); // stop bit(s)
+    pushBit(1); // inter-byte gap
+  }
+  pushBit(1, 2); // trailing idle
+
+  const samples = new Uint8Array(bits.length);
+  for (let i = 0; i < bits.length; i++) samples[i] = bits[i] << channel;
+  return { samples, sampleRate };
 }
 
 export function decodeI2C(
