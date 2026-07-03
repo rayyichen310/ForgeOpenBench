@@ -1,6 +1,7 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef, useMemo, useEffect } from "react";
 import type { UsbTransport } from "./UsbTransport";
 import { WaveformLaLegacyView } from "./WaveformLaLegacyView";
+import { LaCanvas } from "./LaCanvas";
 import { CollapsibleSection } from "./CollapsibleSection";
 import { ChannelsPanel } from "./ChannelsPanel";
 import { AcquirePanel } from "./AcquirePanel";
@@ -11,6 +12,10 @@ import { loadChannels, saveChannels } from "./laChannelConfig";
 import type { LaChannel } from "./laChannelConfig";
 import type { LaAcquireMode } from "./laAcquireModes";
 import type { LaTriggerConfig } from "./laAcquireModes";
+import type { LaCapture, DecoderDefaults } from "./laDecoders";
+import { inferDecoderDefaults, generateLaTestPattern, decodeUartChunk, decodeI2C, decodeSPI } from "./laDecoders";
+import { parseLaCsv, parseLaJson, detectLaFormat, parseSigrokSr } from "./laImport";
+import { downloadLaCapture } from "./laExport";
 
 interface Props {
   transport: UsbTransport;
@@ -37,6 +42,22 @@ export function WaveformLaView(props: Props) {
   const [cursorA, setCursorA] = useState<Cursor>({ sample: 0, dragging: false });
   const [cursorB, setCursorB] = useState<Cursor>({ sample: 0, dragging: false });
   const [trigger, setTrigger] = useState<LaTriggerConfig>({ enabled: false, channel: 0, edge: "rise" });
+  const [capture, setCapture] = useState<LaCapture | null>(null);
+  const decoderDefaults = useMemo<DecoderDefaults>(() => inferDecoderDefaults(capture ?? {
+    sampleRate: 12_000_000, width: 16, samples: new Uint8Array(0), source: "none", importedAt: new Date().toISOString(),
+  }), [capture]);
+  const [zoomSamples, setZoomSamples] = useState<number | null>(null);
+  const [panSample, setPanSample] = useState(0);
+  const [decoderState, setDecoderState] = useState({
+    tab: decoderDefaults.tab,
+    uart: decoderDefaults.uart,
+    i2c: decoderDefaults.i2c,
+    spi: decoderDefaults.spi,
+  });
+  useEffect(() => {
+    setDecoderState({ tab: decoderDefaults.tab, uart: decoderDefaults.uart, i2c: decoderDefaults.i2c, spi: decoderDefaults.spi });
+  }, [decoderDefaults]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleChannelsChange = (next: LaChannel[]) => {
     saveChannels(next);
@@ -49,6 +70,75 @@ export function WaveformLaView(props: Props) {
   const handleRun = useCallback(() => setAcquireMode("running"), []);
   const handleStop = useCallback(() => setAcquireMode("stopped"), []);
   const handleSingle = useCallback(() => setAcquireMode("single-armed"), []);
+
+  const uartRows = useMemo(() => {
+    if (!capture || decoderState.tab !== "uart" || !decoderState.uart) return [];
+    return decodeUartChunk(capture.samples, capture.sampleRate, decoderState.uart.baud, decoderState.uart.ch);
+  }, [capture, decoderState]);
+  const i2cRows = useMemo(() => {
+    if (!capture || decoderState.tab !== "i2c" || !decoderState.i2c) return [];
+    return decodeI2C(capture.samples, capture.sampleRate, decoderState.i2c.scl, decoderState.i2c.sda);
+  }, [capture, decoderState]);
+  const spiRows = useMemo(() => {
+    if (!capture || decoderState.tab !== "spi" || !decoderState.spi) return [];
+    return decodeSPI(capture.samples, capture.sampleRate, decoderState.spi.mosi, decoderState.spi.miso, decoderState.spi.sck, decoderState.spi.cs, decoderState.spi.mode, decoderState.spi.bits, decoderState.spi.csActiveLow);
+  }, [capture, decoderState]);
+
+  const totalSamples = useMemo(() => Math.floor((capture?.samples.length ?? 0) / ((capture?.width ?? 8) === 16 ? 2 : 1)), [capture]);
+  const handleZoomIn = useCallback(() => {
+    const zoom = zoomSamples ?? totalSamples;
+    setZoomSamples(Math.max(10, zoom * 0.8));
+  }, [zoomSamples, totalSamples]);
+  const handleZoomOut = useCallback(() => {
+    const zoom = zoomSamples ?? totalSamples;
+    const next = zoom * 1.25;
+    setZoomSamples(next >= totalSamples ? null : next);
+  }, [zoomSamples, totalSamples]);
+  const handleFit = useCallback(() => {
+    setZoomSamples(null);
+    setPanSample(0);
+  }, []);
+
+  const handleImport = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const format = detectLaFormat(file.name, file.type);
+    let loaded: LaCapture;
+    if (format === "sigrok-sr") {
+      const buf = await file.arrayBuffer();
+      loaded = await parseSigrokSr(buf);
+    } else if (format === "fob-json") {
+      loaded = parseLaJson(await file.text());
+    } else {
+      loaded = parseLaCsv(await file.text()); // default CSV importer for .csv and unknown text
+    }
+    setCapture(loaded);
+    setSampleRate(loaded.sampleRate);
+    setWidth(loaded.width);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }, []);
+
+  const handlePattern = useCallback(() => {
+    if (isRunning) return;
+    const rate = 1_000_000;
+    const samples = generateLaTestPattern(rate, 1);
+    const loaded: LaCapture = {
+      sampleRate: rate,
+      width: 8,
+      samples,
+      source: "fob-pattern",
+      importedAt: new Date().toISOString(),
+      channelLabels: ["UART_TX", "I2C_SCL", "I2C_SDA", "SPI_MOSI", "SPI_MISO", "SPI_SCK", "SPI_CS"],
+    };
+    setCapture(loaded);
+    setSampleRate(rate);
+    setWidth(8);
+  }, [isRunning]);
+
+  const handleExport = useCallback(() => {
+    if (!capture) return;
+    downloadLaCapture(capture, `capture-${capture.sampleRate / 1e6}MHz-${capture.width}bit.csv`);
+  }, [capture]);
 
   if (useLegacy) {
     return (
@@ -64,7 +154,7 @@ export function WaveformLaView(props: Props) {
           </button>
         </div>
         <div className="flex-1 min-h-0">
-          <WaveformLaLegacyView {...props} />
+          <WaveformLaLegacyView {...props} capture={capture} />
         </div>
       </div>
     );
@@ -96,7 +186,40 @@ export function WaveformLaView(props: Props) {
           Single
         </button>
         <span className="text-fob-text-dim">{acquireMode}</span>
+        {capture && (
+          <span className="text-fob-text-dim">
+            {capture.samples.length.toLocaleString()} samples @ {(capture.sampleRate / 1e6).toFixed(1)} MHz
+          </span>
+        )}
         <div className="flex-1" />
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".csv,.json,.sr"
+          onChange={handleImport}
+          className="hidden"
+        />
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          className="px-2 py-1 rounded text-xs bg-fob-surface border border-fob-border hover:bg-fob-border"
+        >
+          Import
+        </button>
+        <button
+          onClick={handleExport}
+          disabled={!capture}
+          className="px-2 py-1 rounded text-xs bg-fob-surface border border-fob-border hover:bg-fob-border disabled:text-fob-text-dim"
+        >
+          Export
+        </button>
+        <button
+          onClick={handlePattern}
+          disabled={isRunning}
+          className="px-2 py-1 rounded text-xs bg-fob-surface border border-fob-border hover:bg-fob-border disabled:text-fob-text-dim"
+          title="Load synthetic UART/I2C/SPI capture"
+        >
+          Pattern
+        </button>
         <button
           onClick={() => setUseLegacy(true)}
           className="px-2 py-1 rounded text-xs bg-fob-surface border border-fob-border hover:bg-fob-border"
@@ -108,13 +231,56 @@ export function WaveformLaView(props: Props) {
       {/* Main area: canvas + right panel */}
       <div className="flex flex-1 gap-1 overflow-hidden min-h-0">
         <div className="flex flex-col flex-1 min-h-0 min-w-0 gap-1">
-          {/* Legacy canvas embedded during transition */}
+          {/* Canvas toolbar */}
+          <div className="flex items-center gap-2 px-2 py-1 bg-fob-surface border border-fob-border rounded text-xs shrink-0">
+            <span className="text-fob-text-dim">Waveform</span>
+            <div className="flex-1" />
+            <button onClick={handleFit} disabled={!capture} className="px-2 py-0.5 rounded bg-fob-surface hover:bg-fob-border disabled:text-fob-text-dim" title="Fit entire capture">Fit</button>
+            <button onClick={handleZoomOut} disabled={!capture} className="px-2 py-0.5 rounded bg-fob-surface hover:bg-fob-border disabled:text-fob-text-dim" title="Zoom out">−</button>
+            <button onClick={handleZoomIn} disabled={!capture} className="px-2 py-0.5 rounded bg-fob-surface hover:bg-fob-border disabled:text-fob-text-dim" title="Zoom in">+</button>
+            <span className="text-fob-text-dim w-24 text-right">{capture ? `${(zoomSamples ?? totalSamples).toLocaleString()} smp` : "—"}</span>
+          </div>
+          {/* Main waveform canvas with decoder annotations */}
           <div className="flex-1 rounded border border-fob-border overflow-hidden bg-fob-surface min-h-0 min-w-0 select-none">
-            <WaveformLaLegacyView {...props} />
+            {capture && capture.samples.length > 0 ? (
+              <LaCanvas
+                samples={capture.samples}
+                sampleRate={capture.sampleRate}
+                width={capture.width}
+                channels={channels}
+                zoomSamples={zoomSamples}
+                panSample={panSample}
+                decoderTab={decoderState.tab}
+                decoderRows={uartRows}
+                i2cRows={i2cRows}
+                spiRows={spiRows}
+                decoderChannel={decoderState.uart?.ch}
+                decoderSda={decoderState.i2c?.sda}
+                decoderMosi={decoderState.spi?.mosi}
+                showCursors={showCursors}
+                cursorA={cursorA.sample}
+                cursorB={cursorB.sample}
+                onPanChange={setPanSample}
+                onZoomChange={setZoomSamples}
+              />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center text-fob-text-dim text-xs">
+                Import a capture or click Pattern to load a signal.
+              </div>
+            )}
           </div>
           {/* Bottom decoders panel */}
           <div className="h-40 rounded border border-fob-border overflow-hidden bg-fob-surface shrink-0 min-w-0">
-            <LaDecodersPanel frozenBuf={null} sampleRate={sampleRate} running={isRunning} />
+            <LaDecodersPanel
+              capture={capture}
+              sampleRate={sampleRate}
+              running={isRunning}
+              suggestedTab={decoderDefaults.tab}
+              defaultUart={decoderDefaults.uart}
+              defaultI2c={decoderDefaults.i2c}
+              defaultSpi={decoderDefaults.spi}
+              onChange={setDecoderState}
+            />
           </div>
         </div>
 
@@ -144,7 +310,7 @@ export function WaveformLaView(props: Props) {
               cursorB={cursorB}
               onCursorAChange={setCursorA}
               onCursorBChange={setCursorB}
-              totalSamples={0}
+              totalSamples={capture?.samples.length ?? 0}
             />
           </CollapsibleSection>
         </div>

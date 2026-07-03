@@ -1,0 +1,2 @@
+# Ignore a full sigrok-dumps clone if someone downloads it here.
+sigrok-dumps/
