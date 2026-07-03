@@ -164,6 +164,7 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
             <span className="text-fob-text-dim">CS:</span>
             <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14"
               value={spi.cs} onChange={e => setSpi(c => ({ ...c, cs: Number(e.target.value) }))}>
+              <option value={-1}>None</option>
               {Array.from({ length: 16 }, (_, i) => <option key={i} value={i}>D{i}</option>)}
             </select>
             <span className="text-fob-text-dim">Mode:</span>

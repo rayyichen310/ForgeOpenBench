@@ -192,8 +192,9 @@ export function decodeSPI(
 ): SPIFrame[] {
   const rows: SPIFrame[] = [];
   const bit = (s: number, ch: number) => (samples[Math.max(0, Math.min(samples.length - 1, s))] >> ch) & 1;
-  const cs = (s: number) => bit(s, csCh);
-  const csActive = (s: number) => csActiveLow ? cs(s) === 0 : cs(s) === 1;
+  const hasCs = csCh >= 0;
+  const cs = (s: number) => hasCs ? bit(s, csCh) : 0;
+  const csActive = (s: number) => hasCs ? (csActiveLow ? cs(s) === 0 : cs(s) === 1) : true;
 
   // Determine sample edge: CPHA 0 = sample on first edge, CPHA 1 = sample on second edge
   const cpha = mode & 1;

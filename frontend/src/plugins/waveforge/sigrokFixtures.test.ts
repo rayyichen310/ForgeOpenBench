@@ -3,7 +3,7 @@ import { readFile } from "fs/promises";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { parseSigrokSr } from "./sigrokSrParser";
-import { decodeUartChunk, decodeI2C } from "./laDecoders";
+import { decodeUartChunk, decodeI2C, decodeSPI } from "./laDecoders";
 
 const FIXTURE_DIR = join(dirname(fileURLToPath(import.meta.url)), "test-fixtures", "sigrok");
 
@@ -33,12 +33,13 @@ describe("sigrok-dumps fixtures", () => {
     expect(frames.some(f => f.type === "start")).toBe(true);
   });
 
-  it("loads spi-count-lsb capture", async () => {
+  it("decodes spi-count-lsb capture without CS", async () => {
     const cap = await parseSigrokSr(await loadFixture("spi-count-lsb.sr"));
     expect(cap.sampleRate).toBe(400_000);
     expect(cap.width).toBe(8);
     expect(cap.samples.length).toBeGreaterThan(0);
-    // This capture has MOSI on ch0, MISO on ch1, SCK on ch2, no CS line.
-    // We just verify the parser loads it; the SPI decoder requires a CS frame.
+    // MOSI on ch0, MISO on ch1 (all low), SCK on ch2, no CS line.
+    const frames = decodeSPI(cap.samples, cap.sampleRate, 0, 1, 2, -1, 0, 8, true);
+    expect(frames.length).toBeGreaterThan(0);
   });
 });
