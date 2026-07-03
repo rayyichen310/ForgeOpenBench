@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.9.1-rc16] — 2026-07-03
+
+### Fixed
+- **WaveForge LA — auto-detect polish**
+  - Fixed label-based protocol conditions in `autoDetectLaProtocol` so they only match when the corresponding label is actually present (prevents 1-Wire from always winning by default).
+  - `inferDecoderDefaults` now recognizes CAN and 1-Wire channel labels and prefers UART when a TX label is present.
+  - When a channel is labeled as UART but the bytes decode as valid Modbus RTU frames, `autoDetectLaProtocol` now returns `modbus`.
+  - Real SWD sigrok-dumps fixture is now auto-detected as `swd` with the correct channels.
+  - Real Modbus RTU sigrok-dumps fixture is now auto-detected as `modbus` with the correct channel/baud/parity.
+
+### Added
+- **WaveForge LA — auto-detect regression tests**
+  - `sigrokFixtures.test.ts` now asserts that `autoDetectLaProtocol` correctly classifies the real SWD and Modbus RTU fixtures.
+
 ## [0.9.1-rc15] — 2026-07-03
 
 ### Added
