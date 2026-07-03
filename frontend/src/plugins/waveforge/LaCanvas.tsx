@@ -1,7 +1,7 @@
 import { useRef, useEffect, useCallback } from "react";
 import type { LaChannel } from "./laChannelConfig";
 import { CHANNEL_COLORS, DEFAULT_LABEL_WIDTH } from "./laChannelConfig";
-import type { DecoderTab, TickerRow, I2CFrame, SPIFrame, CANFrame } from "./laDecoders";
+import type { DecoderTab, TickerRow, I2CFrame, SPIFrame, CANFrame, OneWireFrame } from "./laDecoders";
 
 interface Props {
   samples: Uint8Array;
@@ -15,10 +15,12 @@ interface Props {
   i2cRows?: I2CFrame[];
   spiRows?: SPIFrame[];
   canRows?: CANFrame[];
+  oneWireRows?: OneWireFrame[];
   decoderChannel?: number;
   decoderSda?: number;
   decoderMosi?: number;
   decoderCan?: number;
+  decoderOneWire?: number;
   showCursors?: boolean;
   cursorA?: number;
   cursorB?: number;
@@ -225,6 +227,17 @@ export function LaCanvas(props: Props) {
           if (r.data.length > 0) {
             drawBubble(r.endSample, chIdx, r.data.map(b => b.toString(16).padStart(2, "0").toUpperCase()).join(" "), color);
           }
+        });
+      }
+    }
+    if (props.decoderTab === "onewire" && props.oneWireRows) {
+      const chIdx = visible.findIndex(c => c.id === props.decoderOneWire);
+      if (chIdx >= 0) {
+        const color = visible[chIdx]?.color || CHANNEL_COLORS[props.decoderOneWire ?? 0];
+        props.oneWireRows.forEach(r => {
+          if (r.type === "reset") drawBubble(r.startSample, chIdx, "RST", color);
+          else if (r.type === "presence") drawBubble(r.startSample, chIdx, "PRES", color);
+          else if (r.type === "byte" && r.value !== undefined) drawBubble(r.startSample, chIdx, `0x${r.value.toString(16).padStart(2, "0").toUpperCase()}`, color);
         });
       }
     }

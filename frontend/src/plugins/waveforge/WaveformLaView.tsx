@@ -13,7 +13,7 @@ import type { LaChannel } from "./laChannelConfig";
 import type { LaAcquireMode } from "./laAcquireModes";
 import type { LaTriggerConfig } from "./laAcquireModes";
 import type { LaCapture, DecoderDefaults } from "./laDecoders";
-import { inferDecoderDefaults, generateLaTestPattern, decodeUartChunk, decodeI2C, decodeSPI, decodeCAN } from "./laDecoders";
+import { inferDecoderDefaults, generateLaTestPattern, decodeUartChunk, decodeI2C, decodeSPI, decodeCAN, decodeOneWire } from "./laDecoders";
 import { parseLaCsv, parseLaJson, detectLaFormat, parseSigrokSr } from "./laImport";
 import { downloadLaCapture } from "./laExport";
 
@@ -54,9 +54,10 @@ export function WaveformLaView(props: Props) {
     i2c: decoderDefaults.i2c,
     spi: decoderDefaults.spi,
     can: decoderDefaults.can,
+    onewire: decoderDefaults.onewire,
   });
   useEffect(() => {
-    setDecoderState({ tab: decoderDefaults.tab, uart: decoderDefaults.uart, i2c: decoderDefaults.i2c, spi: decoderDefaults.spi, can: decoderDefaults.can });
+    setDecoderState({ tab: decoderDefaults.tab, uart: decoderDefaults.uart, i2c: decoderDefaults.i2c, spi: decoderDefaults.spi, can: decoderDefaults.can, onewire: decoderDefaults.onewire });
   }, [decoderDefaults]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -87,6 +88,10 @@ export function WaveformLaView(props: Props) {
   const canRows = useMemo(() => {
     if (!capture || decoderState.tab !== "can" || !decoderState.can) return [];
     return decodeCAN(capture.samples, capture.sampleRate, decoderState.can.ch, decoderState.can.baud);
+  }, [capture, decoderState]);
+  const oneWireRows = useMemo(() => {
+    if (!capture || decoderState.tab !== "onewire" || !decoderState.onewire) return [];
+    return decodeOneWire(capture.samples, capture.sampleRate, decoderState.onewire.ch);
   }, [capture, decoderState]);
 
   const totalSamples = useMemo(() => Math.floor((capture?.samples.length ?? 0) / ((capture?.width ?? 8) === 16 ? 2 : 1)), [capture]);
@@ -260,10 +265,12 @@ export function WaveformLaView(props: Props) {
                 i2cRows={i2cRows}
                 spiRows={spiRows}
                 canRows={canRows}
+                oneWireRows={oneWireRows}
                 decoderChannel={decoderState.uart?.ch}
                 decoderSda={decoderState.i2c?.sda}
                 decoderMosi={decoderState.spi?.mosi}
                 decoderCan={decoderState.can?.ch}
+                decoderOneWire={decoderState.onewire?.ch}
                 showCursors={showCursors}
                 cursorA={cursorA.sample}
                 cursorB={cursorB.sample}
@@ -287,6 +294,7 @@ export function WaveformLaView(props: Props) {
               defaultI2c={decoderDefaults.i2c}
               defaultSpi={decoderDefaults.spi}
               defaultCan={decoderDefaults.can}
+              defaultOneWire={decoderDefaults.onewire}
               onChange={setDecoderState}
             />
           </div>

@@ -5,9 +5,11 @@ import {
   decodeI2C,
   decodeSPI,
   decodeCAN,
+  decodeOneWire,
   generateLaTestPattern,
   makeFakeUartSignal,
   generateCanFrame,
+  generateOneWireFrame,
   MAX_TICKER,
   inferDecoderDefaults,
   autoDetectLaProtocol,
@@ -415,7 +417,7 @@ describe("autoDetectLaProtocol", () => {
     const samples = generateLaTestPattern(1_000_000, 1);
     const result = autoDetectLaProtocol(cap(samples, 1_000_000));
     expect(result.score).toBeGreaterThan(0);
-    expect(result.tab).toMatch(/^(uart|i2c|spi|can)$/);
+    expect(result.tab).toMatch(/^(uart|i2c|spi|can|onewire)$/);
   });
   it("returns a positive score for a CAN signal", () => {
     const samples = generateCanFrame(1_000_000, 500_000, 3, 0x123, [0xDE, 0xAD, 0xBE, 0xEF]);
@@ -423,6 +425,13 @@ describe("autoDetectLaProtocol", () => {
     expect(result.score).toBeGreaterThan(0);
     expect(result.tab).toBe("can");
     expect(result.can).toBeDefined();
+  });
+  it("returns a positive score for a 1-Wire signal", () => {
+    const samples = generateOneWireFrame(1_000_000, 2, [0x33, 0x00]);
+    const result = autoDetectLaProtocol({ ...cap(samples, 1_000_000), channelLabels: ["", "", "1W"] });
+    expect(result.score).toBeGreaterThan(0);
+    expect(result.tab).toBe("onewire");
+    expect(result.onewire).toBeDefined();
   });
 });
 
@@ -458,5 +467,35 @@ describe("decodeCAN", () => {
     const frames = decodeCAN(combined, 1_000_000, 0, 500_000);
     expect(frames).toHaveLength(2);
     expect(frames.map(f => f.id)).toEqual([0x100, 0x101]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// decodeOneWire
+// ---------------------------------------------------------------------------
+
+describe("decodeOneWire", () => {
+  const RATE = 1_000_000;
+
+  it("detects reset and presence pulses", () => {
+    const samples = generateOneWireFrame(RATE, 0, []);
+    const frames = decodeOneWire(samples, RATE, 0);
+    expect(frames.some(f => f.type === "reset")).toBe(true);
+    expect(frames.some(f => f.type === "presence")).toBe(true);
+  });
+
+  it("decodes bytes after reset/presence", () => {
+    const samples = generateOneWireFrame(RATE, 0, [0x33, 0x00]);
+    const frames = decodeOneWire(samples, RATE, 0);
+    const bytes = frames.filter(f => f.type === "byte");
+    expect(bytes.map(f => f.value)).toEqual([0x33, 0x00]);
+  });
+
+  it("decodes on a non-zero channel", () => {
+    const samples = generateOneWireFrame(RATE, 7, [0xAA]);
+    const frames = decodeOneWire(samples, RATE, 7);
+    const bytes = frames.filter(f => f.type === "byte");
+    expect(bytes).toHaveLength(1);
+    expect(bytes[0].value).toBe(0xAA);
   });
 });

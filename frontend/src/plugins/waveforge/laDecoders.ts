@@ -37,7 +37,15 @@ export interface CANFrame {
   error?: boolean;
 }
 
-export type DecoderTab = "uart" | "i2c" | "spi" | "can";
+export interface OneWireFrame {
+  startSample: number;
+  endSample: number;
+  ts: number;
+  type: "reset" | "presence" | "byte";
+  value?: number;
+}
+
+export type DecoderTab = "uart" | "i2c" | "spi" | "can" | "onewire";
 
 export interface LaCapture {
   sampleRate: number;
@@ -54,6 +62,7 @@ export interface DecoderDefaults {
   i2c: { scl: number; sda: number; addrBits: 7 | 8 };
   spi: { mosi: number; miso: number; sck: number; cs: number; mode: 0 | 1 | 2 | 3; bits: 8 | 16; csActiveLow: boolean };
   can: { ch: number; baud: number };
+  onewire: { ch: number };
 }
 
 export function inferDecoderDefaults(capture: LaCapture): DecoderDefaults {
@@ -77,19 +86,21 @@ export function inferDecoderDefaults(capture: LaCapture): DecoderDefaults {
   const uartCh = tx >= 0 ? tx : 0;
   const canCh = find(["can", "canrx", "can_rx", "rx"]);
   const canDefaults = { ch: canCh >= 0 ? canCh : 0, baud: 500000 };
+  const oneWireCh = find(["onewire", "1wire", "1w", "ow", "dq"]);
+  const oneWireDefaults = { ch: oneWireCh >= 0 ? oneWireCh : 0 };
   if (scl >= 0 && sda >= 0) {
-    return { tab: "i2c", uart: { baud: 115200, ch: uartCh }, i2c: { scl, sda, addrBits: 7 }, spi: { mosi: mosi >= 0 ? mosi : 0, miso: miso >= 0 ? miso : 0, sck: sck >= 0 ? sck : 1, cs: cs >= 0 ? cs : -1, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults };
+    return { tab: "i2c", uart: { baud: 115200, ch: uartCh }, i2c: { scl, sda, addrBits: 7 }, spi: { mosi: mosi >= 0 ? mosi : 0, miso: miso >= 0 ? miso : 0, sck: sck >= 0 ? sck : 1, cs: cs >= 0 ? cs : -1, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults };
   }
   const definedLabels = labels.filter((l) => l !== undefined && l !== "");
   const allNumeric = definedLabels.length > 0 && definedLabels.every(l => /^\d+$/.test(l));
   const detected = detectSpiChannels(capture.samples, capture.width);
   if ((mosi >= 0 && sck >= 0) || (sck >= 0 && cs >= 0)) {
-    return { tab: "spi", uart: { baud: 115200, ch: uartCh }, i2c: { scl: scl >= 0 ? scl : 1, sda: sda >= 0 ? sda : 2, addrBits: 7 }, spi: { mosi: mosi >= 0 ? mosi : 0, miso: miso >= 0 ? miso : 1, sck: sck >= 0 ? sck : 2, cs: cs >= 0 ? cs : -1, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults };
+    return { tab: "spi", uart: { baud: 115200, ch: uartCh }, i2c: { scl: scl >= 0 ? scl : 1, sda: sda >= 0 ? sda : 2, addrBits: 7 }, spi: { mosi: mosi >= 0 ? mosi : 0, miso: miso >= 0 ? miso : 1, sck: sck >= 0 ? sck : 2, cs: cs >= 0 ? cs : -1, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults };
   }
   if (capture.source === "sigrok-sr" && allNumeric && definedLabels.length <= 4) {
-    return { tab: "spi", uart: { baud: 115200, ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: -1, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults };
+    return { tab: "spi", uart: { baud: 115200, ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: -1, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults };
   }
-  return { tab: "uart", uart: { baud: estimateUartBaud(capture.samples, capture.sampleRate, uartCh), ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults };
+  return { tab: "uart", uart: { baud: estimateUartBaud(capture.samples, capture.sampleRate, uartCh), ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults };
 }
 
 export function estimateUartBaud(samples: Uint8Array, sampleRate: number, ch: number): number {
@@ -169,6 +180,7 @@ export interface AutoDetectResult {
   i2c?: { scl: number; sda: number; addrBits: 7 | 8 };
   spi?: { mosi: number; miso: number; sck: number; cs: number; mode: 0 | 1 | 2 | 3; bits: 8 | 16 };
   can?: { ch: number; baud: number };
+  onewire?: { ch: number };
 }
 
 /**
@@ -200,6 +212,11 @@ export function autoDetectLaProtocol(capture: LaCapture): AutoDetectResult {
   if (labelDefaults.can) {
     const frames = decodeCAN(samples, rate, labelDefaults.can.ch, labelDefaults.can.baud);
     if (frames.length > 0) return { tab: "can", score: frames.length, reason: `CAN ${labelDefaults.can.baud.toLocaleString()} baud on D${labelDefaults.can.ch} (labels)`, can: labelDefaults.can };
+  }
+  if (labelDefaults.onewire) {
+    const frames = decodeOneWire(samples, rate, labelDefaults.onewire.ch);
+    const resetFrames = frames.filter(f => f.type === "reset" || f.type === "presence").length;
+    if (resetFrames > 0) return { tab: "onewire", score: resetFrames, reason: `1-Wire on D${labelDefaults.onewire.ch} (labels)`, onewire: labelDefaults.onewire };
   }
 
   const active = getActiveChannels(samples, width);
@@ -244,6 +261,15 @@ export function autoDetectLaProtocol(capture: LaCapture): AutoDetectResult {
       if (frames.length > best.score) {
         best = { tab: "can", score: frames.length, reason: `CAN ${baud.toLocaleString()} baud on D${ch}`, can: { ch, baud } };
       }
+    }
+  }
+
+  // 1-Wire: try each active channel.
+  for (const ch of active) {
+    const frames = decodeOneWire(samples, rate, ch);
+    const score = frames.filter(f => f.type === "reset" || f.type === "presence").length;
+    if (score > best.score) {
+      best = { tab: "onewire", score, reason: `1-Wire on D${ch}`, onewire: { ch } };
     }
   }
 
@@ -727,4 +753,124 @@ export function generateCanFrame(
     }
   }
   return samples;
+}
+
+// ---------------------------------------------------------------------------
+// 1-Wire decoder
+// ---------------------------------------------------------------------------
+
+const ONEWIRE_RESET_MIN_US = 480;
+const ONEWIRE_WRITE1_MAX_US = 15;
+const ONEWIRE_PRESENCE_MIN_US = 60;
+const ONEWIRE_PRESENCE_MAX_US = 240;
+
+export function decodeOneWire(
+  samples: Uint8Array,
+  sampleRate: number,
+  channel: number
+): OneWireFrame[] {
+  const frames: OneWireFrame[] = [];
+  const bit = (s: number) => (samples[Math.max(0, Math.min(samples.length - 1, s))] >> channel) & 1;
+
+  let i = 0;
+  while (i < samples.length - 1) {
+    // Look for falling edge from idle high.
+    if (bit(i) === 1 && bit(i + 1) === 0) {
+      const fall = i + 1;
+      // Measure low duration.
+      let lowEnd = fall;
+      while (lowEnd < samples.length && bit(lowEnd) === 0) lowEnd++;
+      const lowSamples = lowEnd - fall;
+      const lowUs = (lowSamples / sampleRate) * 1_000_000;
+      if (lowUs >= ONEWIRE_RESET_MIN_US) {
+        // Reset pulse detected. Look for presence pulse after release.
+        let highEnd = lowEnd;
+        while (highEnd < samples.length && bit(highEnd) === 1) highEnd++;
+        const highSamples = highEnd - lowEnd;
+        const highUs = (highSamples / sampleRate) * 1_000_000;
+        const presenceStart = highEnd;
+        let presenceEnd = presenceStart;
+        while (presenceEnd < samples.length && bit(presenceEnd) === 0) presenceEnd++;
+        const presenceSamples = presenceEnd - presenceStart;
+        const presenceUs = (presenceSamples / sampleRate) * 1_000_000;
+        const hasPresence = highUs >= 15 && highUs <= 60 && presenceUs >= ONEWIRE_PRESENCE_MIN_US && presenceUs <= ONEWIRE_PRESENCE_MAX_US;
+        frames.push({ startSample: fall, endSample: lowEnd, ts: fall / sampleRate, type: "reset" });
+        if (hasPresence) {
+          frames.push({ startSample: presenceStart, endSample: presenceEnd, ts: presenceStart / sampleRate, type: "presence" });
+        }
+        i = hasPresence ? presenceEnd : lowEnd;
+        continue;
+      }
+
+      // Normal write/read slot: low duration determines bit.
+      // Any low pulse < reset threshold is a slot; reset was handled above.
+      const bitValue = lowUs <= ONEWIRE_WRITE1_MAX_US ? 1 : 0;
+      frames.push({ startSample: fall, endSample: lowEnd, ts: fall / sampleRate, type: "byte", value: bitValue });
+      i = lowEnd;
+      continue;
+    }
+    i++;
+  }
+
+  // Group consecutive byte-value bits into bytes (LSB first). A reset/presence starts a new packet.
+  const grouped: OneWireFrame[] = [];
+  let current: OneWireFrame[] = [];
+  for (const f of frames) {
+    if (f.type === "reset" || f.type === "presence") {
+      if (current.length > 0) {
+        const byteValue = current.reduce((v, b, idx) => v | ((b.value ?? 0) << idx), 0);
+        grouped.push({ startSample: current[0].startSample, endSample: current[current.length - 1].endSample, ts: current[0].ts, type: "byte", value: byteValue });
+        current = [];
+      }
+      grouped.push(f);
+    } else if (f.type === "byte") {
+      current.push(f);
+      if (current.length === 8) {
+        const byteValue = current.reduce((v, b, idx) => v | ((b.value ?? 0) << idx), 0);
+        grouped.push({ startSample: current[0].startSample, endSample: current[current.length - 1].endSample, ts: current[0].ts, type: "byte", value: byteValue });
+        current = [];
+      }
+    }
+  }
+  if (current.length > 0) {
+    const byteValue = current.reduce((v, b, idx) => v | ((b.value ?? 0) << idx), 0);
+    grouped.push({ startSample: current[0].startSample, endSample: current[current.length - 1].endSample, ts: current[0].ts, type: "byte", value: byteValue });
+  }
+  return grouped.slice(0, MAX_TICKER);
+}
+
+// Generate a 1-Wire reset + presence pulse followed by a byte stream on the given channel.
+export function generateOneWireFrame(
+  sampleRate: number,
+  channel: number,
+  data: number[]
+): Uint8Array {
+  const usToS = (us: number) => Math.max(1, Math.floor((us * sampleRate) / 1_000_000));
+  const out: number[] = [];
+  const push = (v: number, samples: number) => { for (let i = 0; i < samples; i++) out.push(v << channel); };
+  // Idle
+  push(1, usToS(100));
+  // Reset pulse (master low 500µs)
+  push(0, usToS(500));
+  // Release, wait for presence
+  push(1, usToS(30));
+  // Presence pulse (slave low 120µs)
+  push(0, usToS(120));
+  // Recovery
+  push(1, usToS(100));
+  // Write each byte LSB-first
+  for (const b of data) {
+    for (let i = 0; i < 8; i++) {
+      const bit = (b >> i) & 1;
+      if (bit === 1) {
+        push(0, usToS(6));  // write-1 low
+        push(1, usToS(64)); // remainder of slot
+      } else {
+        push(0, usToS(60)); // write-0 low
+        push(1, usToS(10)); // remainder of slot
+      }
+    }
+  }
+  push(1, usToS(100));
+  return Uint8Array.from(out);
 }
