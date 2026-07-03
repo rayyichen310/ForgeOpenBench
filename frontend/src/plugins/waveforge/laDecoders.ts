@@ -64,7 +64,9 @@ export function inferDecoderDefaults(capture: LaCapture): DecoderDefaults {
   if (scl >= 0 && sda >= 0) {
     return { tab: "i2c", uart: { baud: 115200, ch: tx >= 0 ? tx : 0 }, i2c: { scl, sda, addrBits: 7 }, spi: { mosi: mosi >= 0 ? mosi : 0, miso: miso >= 0 ? miso : 0, sck: sck >= 0 ? sck : 1, cs: cs >= 0 ? cs : -1, mode: 0, bits: 8, csActiveLow: true } };
   }
-  if ((mosi >= 0 && sck >= 0) || (sck >= 0 && cs >= 0) || (capture.source === "sigrok-sr" && capture.width <= 4)) {
+  const definedLabels = labels.filter((_, i) => labels[i] !== undefined && labels[i] !== "");
+  const allNumeric = definedLabels.length > 0 && definedLabels.every(l => /^\d+$/.test(l));
+  if ((mosi >= 0 && sck >= 0) || (sck >= 0 && cs >= 0) || (capture.source === "sigrok-sr" && allNumeric && definedLabels.length <= 4)) {
     return { tab: "spi", uart: { baud: 115200, ch: tx >= 0 ? tx : 0 }, i2c: { scl: scl >= 0 ? scl : 1, sda: sda >= 0 ? sda : 2, addrBits: 7 }, spi: { mosi: mosi >= 0 ? mosi : 0, miso: miso >= 0 ? miso : 1, sck: sck >= 0 ? sck : 2, cs: cs >= 0 ? cs : -1, mode: 0, bits: 8, csActiveLow: true } };
   }
   return { tab: "uart", uart: { baud: 115200, ch: tx >= 0 ? tx : 0 }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: 3, miso: 4, sck: 5, cs: 6, mode: 0, bits: 8, csActiveLow: true } };

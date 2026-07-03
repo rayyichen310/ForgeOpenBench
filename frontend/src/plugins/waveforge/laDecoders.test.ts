@@ -6,6 +6,7 @@ import {
   generateLaTestPattern,
   makeFakeUartSignal,
   MAX_TICKER,
+  inferDecoderDefaults,
 } from "./laDecoders";
 
 // ---------------------------------------------------------------------------
@@ -362,5 +363,28 @@ describe("MAX_TICKER cap", () => {
     const sig = buildI2cSignal(0x50, true, data, 4, 0, 1);
     const rows = decodeI2C(sig, 1_000_000, 0, 1);
     expect(rows.length).toBeLessThanOrEqual(MAX_TICKER + 2);
+  });
+});
+
+describe("inferDecoderDefaults", () => {
+  const base = { sampleRate: 1_000_000, width: 8 as const, samples: new Uint8Array(0), source: "fob-csv", importedAt: new Date().toISOString() };
+  it("picks I2C when SCL/SDA labels are present", () => {
+    const cfg = inferDecoderDefaults({ ...base, channelLabels: ["A0", "SCL", "SDA"] });
+    expect(cfg.tab).toBe("i2c");
+    expect(cfg.i2c).toEqual({ scl: 1, sda: 2, addrBits: 7 });
+  });
+  it("picks SPI when MOSI/SCK labels are present", () => {
+    const cfg = inferDecoderDefaults({ ...base, channelLabels: ["MOSI", "MISO", "SCK", "CS"] });
+    expect(cfg.tab).toBe("spi");
+    expect(cfg.spi).toEqual({ mosi: 0, miso: 1, sck: 2, cs: 3, mode: 0, bits: 8, csActiveLow: true });
+  });
+  it("picks UART when TX label is present", () => {
+    const cfg = inferDecoderDefaults({ ...base, channelLabels: ["TX", "RX"] });
+    expect(cfg.tab).toBe("uart");
+    expect(cfg.uart).toEqual({ baud: 115200, ch: 0 });
+  });
+  it("picks SPI for sigrok numeric probes", () => {
+    const cfg = inferDecoderDefaults({ ...base, source: "sigrok-sr", channelLabels: ["0", "1", "2"] });
+    expect(cfg.tab).toBe("spi");
   });
 });
