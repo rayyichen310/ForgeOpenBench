@@ -3,7 +3,7 @@ import { readFile } from "fs/promises";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { parseSigrokSr } from "./sigrokSrParser";
-import { decodeUartChunk, decodeI2C, decodeSPI } from "./laDecoders";
+import { decodeUartChunk, decodeI2C, decodeSPI, inferDecoderDefaults } from "./laDecoders";
 
 const FIXTURE_DIR = join(dirname(fileURLToPath(import.meta.url)), "test-fixtures", "sigrok");
 
@@ -18,7 +18,10 @@ describe("sigrok-dumps fixtures", () => {
     expect(cap.sampleRate).toBe(625_000);
     expect(cap.width).toBe(8);
     expect(cap.samples.length).toBeGreaterThan(0);
-    const rows = decodeUartChunk(cap.samples, cap.sampleRate, 9600, 0);
+    const cfg = inferDecoderDefaults(cap);
+    expect(cfg.tab).toBe("uart");
+    expect(cfg.uart.baud).toBe(9600);
+    const rows = decodeUartChunk(cap.samples, cap.sampleRate, cfg.uart.baud, cfg.uart.ch);
     const text = rows.map(r => String.fromCharCode(r.byte)).join("");
     expect(text.startsWith("Hello World!\r\n")).toBe(true);
   });
@@ -28,7 +31,9 @@ describe("sigrok-dumps fixtures", () => {
     expect(cap.sampleRate).toBe(8_000_000);
     expect(cap.width).toBe(8);
     expect(cap.samples.length).toBeGreaterThan(0);
-    const frames = decodeI2C(cap.samples, cap.sampleRate, 6, 7); // SCL=probe7, SDA=probe8 => ch 6,7
+    const cfg = inferDecoderDefaults(cap);
+    expect(cfg.tab).toBe("i2c");
+    const frames = decodeI2C(cap.samples, cap.sampleRate, cfg.i2c.scl, cfg.i2c.sda);
     expect(frames.length).toBeGreaterThan(0);
     expect(frames.some(f => f.type === "start")).toBe(true);
   });
@@ -38,8 +43,12 @@ describe("sigrok-dumps fixtures", () => {
     expect(cap.sampleRate).toBe(400_000);
     expect(cap.width).toBe(8);
     expect(cap.samples.length).toBeGreaterThan(0);
-    // MOSI on ch0, MISO on ch1 (all low), SCK on ch2, no CS line.
-    const frames = decodeSPI(cap.samples, cap.sampleRate, 0, 1, 2, -1, 0, 8, true);
+    const cfg = inferDecoderDefaults(cap);
+    expect(cfg.tab).toBe("spi");
+    expect(cfg.spi.sck).toBe(2);
+    expect(cfg.spi.mosi).toBe(0);
+    // No CS line in this fixture.
+    const frames = decodeSPI(cap.samples, cap.sampleRate, cfg.spi.mosi, cfg.spi.miso, cfg.spi.sck, -1, 0, 8, true);
     expect(frames.length).toBeGreaterThan(0);
   });
 });
