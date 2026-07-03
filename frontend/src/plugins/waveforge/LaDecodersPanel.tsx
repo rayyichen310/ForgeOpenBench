@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { decodeUartChunk, decodeI2C, decodeSPI, MAX_TICKER } from "./laDecoders";
 import type { DecoderTab, LaCapture } from "./laDecoders";
 import { DEFAULT_BAUDS } from "./laChannelConfig";
@@ -15,6 +15,7 @@ interface Props {
   defaultUart?: UartConfig;
   defaultI2c?: I2cConfig;
   defaultSpi?: SpiConfig;
+  suggestedTab?: DecoderTab;
 }
 
 function ascii(b: number) {
@@ -25,13 +26,20 @@ function fmt(ts: number) {
   return ts < 1e-3 ? `${(ts * 1e6).toFixed(0)}µs` : `${(ts * 1e3).toFixed(2)}ms`;
 }
 
-export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defaultUart, defaultI2c, defaultSpi }: Props) {
+export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defaultUart, defaultI2c, defaultSpi, suggestedTab }: Props) {
   const effectiveBuf = capture?.samples ?? frozenBuf ?? null;
   const effectiveRate = capture?.sampleRate ?? sampleRate ?? 0;
-  const [tab, setTab] = useState<DecoderTab>("uart");
+  const [tab, setTab] = useState<DecoderTab>(suggestedTab ?? "uart");
   const [uart, setUart] = useState<UartConfig>(defaultUart ?? { baud: 115200, ch: 0 });
   const [i2c, setI2c] = useState<I2cConfig>(defaultI2c ?? { scl: 1, sda: 2, addrBits: 7 });
   const [spi, setSpi] = useState<SpiConfig>(defaultSpi ?? { mosi: 3, miso: 4, sck: 5, cs: 6, mode: 0, bits: 8, csActiveLow: true });
+
+  useEffect(() => {
+    if (suggestedTab) setTab(suggestedTab);
+  }, [suggestedTab]);
+  useEffect(() => { if (defaultUart) setUart(defaultUart); }, [defaultUart]);
+  useEffect(() => { if (defaultI2c) setI2c(defaultI2c); }, [defaultI2c]);
+  useEffect(() => { if (defaultSpi) setSpi(defaultSpi); }, [defaultSpi]);
 
   const uartRows = useMemo(() => {
     if (!effectiveBuf || effectiveBuf.length === 0) return [];

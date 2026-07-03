@@ -11,7 +11,8 @@ import { loadChannels, saveChannels } from "./laChannelConfig";
 import type { LaChannel } from "./laChannelConfig";
 import type { LaAcquireMode } from "./laAcquireModes";
 import type { LaTriggerConfig } from "./laAcquireModes";
-import type { LaCapture } from "./laDecoders";
+import type { LaCapture, DecoderDefaults } from "./laDecoders";
+import { inferDecoderDefaults, generateLaTestPattern } from "./laDecoders";
 import { parseLaCsv, parseLaJson, detectLaFormat, parseSigrokSr } from "./laImport";
 import { downloadLaCapture } from "./laExport";
 
@@ -41,6 +42,9 @@ export function WaveformLaView(props: Props) {
   const [cursorB, setCursorB] = useState<Cursor>({ sample: 0, dragging: false });
   const [trigger, setTrigger] = useState<LaTriggerConfig>({ enabled: false, channel: 0, edge: "rise" });
   const [capture, setCapture] = useState<LaCapture | null>(null);
+  const [decoderDefaults, setDecoderDefaults] = useState<DecoderDefaults>(inferDecoderDefaults({
+    sampleRate: 12_000_000, width: 16, samples: new Uint8Array(0), source: "none", importedAt: new Date().toISOString(),
+  }));
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleChannelsChange = (next: LaChannel[]) => {
@@ -71,8 +75,27 @@ export function WaveformLaView(props: Props) {
     setCapture(loaded);
     setSampleRate(loaded.sampleRate);
     setWidth(loaded.width);
+    setDecoderDefaults(inferDecoderDefaults(loaded));
     if (fileInputRef.current) fileInputRef.current.value = "";
   }, []);
+
+  const handlePattern = useCallback(() => {
+    if (isRunning) return;
+    const rate = 1_000_000;
+    const samples = generateLaTestPattern(rate, 1);
+    const loaded: LaCapture = {
+      sampleRate: rate,
+      width: 8,
+      samples,
+      source: "fob-pattern",
+      importedAt: new Date().toISOString(),
+      channelLabels: ["UART_TX", "I2C_SCL", "I2C_SDA", "SPI_MOSI", "SPI_MISO", "SPI_SCK", "SPI_CS"],
+    };
+    setCapture(loaded);
+    setSampleRate(rate);
+    setWidth(8);
+    setDecoderDefaults(inferDecoderDefaults(loaded));
+  }, [isRunning]);
 
   const handleExport = useCallback(() => {
     if (!capture) return;
@@ -152,6 +175,14 @@ export function WaveformLaView(props: Props) {
           Export
         </button>
         <button
+          onClick={handlePattern}
+          disabled={isRunning}
+          className="px-2 py-1 rounded text-xs bg-fob-surface border border-fob-border hover:bg-fob-border disabled:text-fob-text-dim"
+          title="Load synthetic UART/I2C/SPI capture"
+        >
+          Pattern
+        </button>
+        <button
           onClick={() => setUseLegacy(true)}
           className="px-2 py-1 rounded text-xs bg-fob-surface border border-fob-border hover:bg-fob-border"
         >
@@ -164,11 +195,19 @@ export function WaveformLaView(props: Props) {
         <div className="flex flex-col flex-1 min-h-0 min-w-0 gap-1">
           {/* Legacy canvas embedded during transition */}
           <div className="flex-1 rounded border border-fob-border overflow-hidden bg-fob-surface min-h-0 min-w-0 select-none">
-            <WaveformLaLegacyView {...props} />
+            <WaveformLaLegacyView {...props} capture={capture} />
           </div>
           {/* Bottom decoders panel */}
           <div className="h-40 rounded border border-fob-border overflow-hidden bg-fob-surface shrink-0 min-w-0">
-            <LaDecodersPanel capture={capture} sampleRate={sampleRate} running={isRunning} />
+            <LaDecodersPanel
+              capture={capture}
+              sampleRate={sampleRate}
+              running={isRunning}
+              suggestedTab={decoderDefaults.tab}
+              defaultUart={decoderDefaults.uart}
+              defaultI2c={decoderDefaults.i2c}
+              defaultSpi={decoderDefaults.spi}
+            />
           </div>
         </div>
 

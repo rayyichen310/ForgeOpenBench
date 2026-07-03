@@ -36,6 +36,40 @@ export interface LaCapture {
   channelLabels?: string[];
 }
 
+export interface DecoderDefaults {
+  tab: DecoderTab;
+  uart: { baud: number; ch: number };
+  i2c: { scl: number; sda: number; addrBits: 7 | 8 };
+  spi: { mosi: number; miso: number; sck: number; cs: number; mode: 0 | 1 | 2 | 3; bits: 8 | 16; csActiveLow: boolean };
+}
+
+export function inferDecoderDefaults(capture: LaCapture): DecoderDefaults {
+  const labels = capture.channelLabels ?? [];
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const find = (names: string[]) => {
+    for (let i = 0; i < labels.length; i++) {
+      const l = norm(labels[i] ?? "");
+      if (names.some(n => l.includes(n))) return i;
+    }
+    return -1;
+  };
+  const tx = find(["tx", "uarttx", "uart_tx"]);
+  const scl = find(["scl"]);
+  const sda = find(["sda"]);
+  const mosi = find(["mosi"]);
+  const miso = find(["miso"]);
+  const sck = find(["sck", "clk", "spiclk"]);
+  const cs = find(["cs", "ss", "nss"]);
+
+  if (scl >= 0 && sda >= 0) {
+    return { tab: "i2c", uart: { baud: 115200, ch: tx >= 0 ? tx : 0 }, i2c: { scl, sda, addrBits: 7 }, spi: { mosi: mosi >= 0 ? mosi : 0, miso: miso >= 0 ? miso : 0, sck: sck >= 0 ? sck : 1, cs: cs >= 0 ? cs : -1, mode: 0, bits: 8, csActiveLow: true } };
+  }
+  if ((mosi >= 0 && sck >= 0) || (sck >= 0 && cs >= 0) || (capture.source === "sigrok-sr" && capture.width <= 4)) {
+    return { tab: "spi", uart: { baud: 115200, ch: tx >= 0 ? tx : 0 }, i2c: { scl: scl >= 0 ? scl : 1, sda: sda >= 0 ? sda : 2, addrBits: 7 }, spi: { mosi: mosi >= 0 ? mosi : 0, miso: miso >= 0 ? miso : 1, sck: sck >= 0 ? sck : 2, cs: cs >= 0 ? cs : -1, mode: 0, bits: 8, csActiveLow: true } };
+  }
+  return { tab: "uart", uart: { baud: 115200, ch: tx >= 0 ? tx : 0 }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: 3, miso: 4, sck: 5, cs: 6, mode: 0, bits: 8, csActiveLow: true } };
+}
+
 export function decodeUartChunk(
   samples: Uint8Array,
   sampleRate: number,
