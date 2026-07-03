@@ -16,6 +16,7 @@ interface Props {
   defaultI2c?: I2cConfig;
   defaultSpi?: SpiConfig;
   suggestedTab?: DecoderTab;
+  onChange?: (state: { tab: DecoderTab; uart: UartConfig; i2c: I2cConfig; spi: SpiConfig }) => void;
 }
 
 function ascii(b: number) {
@@ -26,7 +27,7 @@ function fmt(ts: number) {
   return ts < 1e-3 ? `${(ts * 1e6).toFixed(0)}µs` : `${(ts * 1e3).toFixed(2)}ms`;
 }
 
-export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defaultUart, defaultI2c, defaultSpi, suggestedTab }: Props) {
+export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defaultUart, defaultI2c, defaultSpi, suggestedTab, onChange }: Props) {
   const effectiveBuf = capture?.samples ?? frozenBuf ?? null;
   const effectiveRate = capture?.sampleRate ?? sampleRate ?? 0;
   const [tab, setTab] = useState<DecoderTab>(suggestedTab ?? "uart");
@@ -41,6 +42,7 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
   useEffect(() => { if (defaultUart) setUart(defaultUart); }, [defaultUart]);
   useEffect(() => { if (defaultI2c) setI2c(defaultI2c); }, [defaultI2c]);
   useEffect(() => { if (defaultSpi) setSpi(defaultSpi); }, [defaultSpi]);
+  useEffect(() => { onChange?.({ tab, uart, i2c, spi }); }, [tab, uart, i2c, spi, onChange]);
 
   const handleAutoDetect = useCallback(() => {
     if (!effectiveBuf || effectiveBuf.length === 0 || effectiveRate <= 0) return;
