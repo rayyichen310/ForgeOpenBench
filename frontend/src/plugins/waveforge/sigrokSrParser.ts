@@ -120,12 +120,21 @@ export async function parseSigrokSr(buffer: ArrayBuffer): Promise<LaCapture> {
   }
   const width = unitsize === 2 ? 16 : 8;
 
+  // Extract optional probe labels from metadata (probe1 -> channel 0, etc.).
+  const channelLabels: string[] = [];
+  for (let i = 1; i <= 64; i++) {
+    const label = params[`probe${i}`];
+    if (label === undefined) break;
+    channelLabels[i - 1] = label;
+  }
+
   return {
     sampleRate,
     width,
     samples,
     source: "sigrok-sr",
     importedAt: new Date().toISOString(),
+    channelLabels: channelLabels.length > 0 ? channelLabels : undefined,
   };
 }
 
