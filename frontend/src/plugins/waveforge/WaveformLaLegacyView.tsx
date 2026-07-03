@@ -4,7 +4,7 @@ import type { UsbDataChunk } from "./usbTypes";
 import { RingBuffer } from "./RingBuffer";
 import { globalBus } from "../../core/global_bus";
 import { toast } from "../../shared/hooks/useToastStore";
-import { MAX_TICKER, decodeUartChunk, decodeI2C, decodeSPI, generateLaTestPattern } from "./laDecoders";
+import { MAX_TICKER, decodeUartChunk, decodeI2C, decodeSPI, generateLaTestPattern, autoDetectLaProtocol } from "./laDecoders";
 import type { TickerRow, DecoderTab, LaCapture } from "./laDecoders";
 import { DEFAULT_CHANNEL_HEIGHT, DEFAULT_CHANNEL_GAP, DEFAULT_LABEL_WIDTH, DEFAULT_RING_CAPACITY, DEFAULT_JITTER_CAP_SAMPLES, SAMPLE_RATES, TIMEBASE_PRESETS, CHANNEL_COLORS, DEFAULT_BAUDS, loadChannels, saveChannels, loadDecoders, saveDecoders } from "./laChannelConfig";
 import type { LaChannel } from "./laChannelConfig";
@@ -57,6 +57,7 @@ export function WaveformLaLegacyView({ transport, isActive, connected, capture }
   const [zoomSamples, setZoomSamples] = useState<number | null>(null); // null = fit all
   const [panSample,   setPanSample]   = useState(0);
   const [classicMode, setClassicMode] = useState(false);
+  const [autoDetectResult, setAutoDetectResult] = useState<{ tab: DecoderTab; reason: string } | null>(null);
   const startTimeRef   = useRef(0);
   const elapsedSRef    = useRef(0); // mirrors elapsedS for use inside draw()
   const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -761,6 +762,25 @@ export function WaveformLaLegacyView({ transport, isActive, connected, capture }
     if (running) { setZoomSamples(null); setPanSample(0); setTickerRows([]); }
   }, [running]);
 
+  // Auto-detect protocol, channels, and baud from the current frozen buffer.
+  const handleAutoDetect = useCallback(() => {
+    const buf = frozenBufRef.current;
+    if (!buf || buf.length === 0 || liveRateRef.current <= 0) return;
+    const cap: LaCapture = {
+      samples: buf,
+      sampleRate: liveRateRef.current,
+      width: liveWidthRef.current,
+      source: "live",
+      importedAt: new Date().toISOString(),
+    };
+    const result = autoDetectLaProtocol(cap);
+    setAutoDetectResult({ tab: result.tab, reason: result.reason });
+    setDecoderTab(result.tab);
+    if (result.uart) setUartCfg(result.uart);
+    if (result.i2c) setI2cCfg(result.i2c);
+    if (result.spi) setSpiCfg(s => ({ ...result.spi!, csActiveLow: s.csActiveLow }));
+  }, []);
+
   // Offline test pattern: synthetic capture with UART, I2C, and SPI traffic
   const loadTestPattern = useCallback(() => {
     if (runningRef.current) void stop();
@@ -1058,11 +1078,24 @@ export function WaveformLaLegacyView({ transport, isActive, connected, capture }
             </button>
           ))}
           <div className="flex-1" />
+          <button
+            onClick={handleAutoDetect}
+            disabled={!frozenBufRef.current || frozenBufRef.current.length === 0 || liveRateRef.current <= 0}
+            className="px-2 py-0.5 rounded bg-fob-blue text-fob-accent-text hover:bg-fob-blue/80 disabled:bg-fob-surface disabled:text-fob-text-dim"
+            title="Auto-detect protocol, channels, and baud"
+          >
+            Auto
+          </button>
           <button onClick={() => setTickerRows([])}
             className="px-2 py-0.5 rounded bg-fob-surface hover:bg-fob-border text-fob-text">
             Clear
           </button>
         </div>
+        {autoDetectResult && (
+          <div className="px-2 py-0.5 text-[10px] text-fob-text-dim border-b border-fob-border bg-fob-surface shrink-0">
+            Auto-detect: {autoDetectResult.reason}
+          </div>
+        )}
 
         {/* UART controls + rows */}
         {decoderTab === "uart" && (
