@@ -121,11 +121,12 @@ export async function parseSigrokSr(buffer: ArrayBuffer): Promise<LaCapture> {
   const width = unitsize === 2 ? 16 : 8;
 
   // Extract optional probe labels from metadata (probe1 -> channel 0, etc.).
+  const totalProbes = Number(params["total probes"] ?? 0);
+  const maxProbe = Number.isFinite(totalProbes) && totalProbes > 0 ? totalProbes : 64;
   const channelLabels: string[] = [];
-  for (let i = 1; i <= 64; i++) {
+  for (let i = 1; i <= maxProbe; i++) {
     const label = params[`probe${i}`];
-    if (label === undefined) break;
-    channelLabels[i - 1] = label;
+    if (label !== undefined) channelLabels[i - 1] = label;
   }
 
   return {
