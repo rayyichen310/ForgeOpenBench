@@ -6,6 +6,9 @@ FILES=(
   "uart/hello_world/8n1/hello_world_8n1_9600.sr"
   "i2c/sensirion_sht2x/i2c-sht21-100khz-read-serial-hold.sr"
   "spi/spi-count-lsb.sr"
+  "swd/stlink_openocd/init_write_0xabbabeeb.sr"
+  "jtag/keil_mcb2140/keil_mcb2140_irscan_drscan.sr"
+  "uart/modbus_rtu/wizmodbus/wizmodbus.sr"
 )
 
 cd "$(dirname "$0")"
