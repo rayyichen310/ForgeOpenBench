@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import { decodeUartChunk, decodeI2C, decodeSPI, MAX_TICKER } from "./laDecoders";
-import type { DecoderTab } from "./laDecoders";
+import type { DecoderTab, LaCapture } from "./laDecoders";
 import { DEFAULT_BAUDS } from "./laChannelConfig";
 
 interface UartConfig { baud: number; ch: number; }
@@ -8,8 +8,9 @@ interface I2cConfig { scl: number; sda: number; addrBits: 7 | 8; }
 interface SpiConfig { mosi: number; miso: number; sck: number; cs: number; mode: 0 | 1 | 2 | 3; bits: 8 | 16; csActiveLow: boolean; }
 
 interface Props {
-  frozenBuf: Uint8Array | null;
-  sampleRate: number;
+  frozenBuf?: Uint8Array | null;
+  sampleRate?: number;
+  capture?: LaCapture | null;
   running: boolean;
   defaultUart?: UartConfig;
   defaultI2c?: I2cConfig;
@@ -24,26 +25,28 @@ function fmt(ts: number) {
   return ts < 1e-3 ? `${(ts * 1e6).toFixed(0)}µs` : `${(ts * 1e3).toFixed(2)}ms`;
 }
 
-export function LaDecodersPanel({ frozenBuf, sampleRate, running, defaultUart, defaultI2c, defaultSpi }: Props) {
+export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defaultUart, defaultI2c, defaultSpi }: Props) {
+  const effectiveBuf = capture?.samples ?? frozenBuf ?? null;
+  const effectiveRate = capture?.sampleRate ?? sampleRate ?? 0;
   const [tab, setTab] = useState<DecoderTab>("uart");
   const [uart, setUart] = useState<UartConfig>(defaultUart ?? { baud: 115200, ch: 0 });
   const [i2c, setI2c] = useState<I2cConfig>(defaultI2c ?? { scl: 1, sda: 2, addrBits: 7 });
   const [spi, setSpi] = useState<SpiConfig>(defaultSpi ?? { mosi: 3, miso: 4, sck: 5, cs: 6, mode: 0, bits: 8, csActiveLow: true });
 
   const uartRows = useMemo(() => {
-    if (!frozenBuf || frozenBuf.length === 0) return [];
-    return decodeUartChunk(frozenBuf, sampleRate, uart.baud, uart.ch).slice(0, MAX_TICKER);
-  }, [frozenBuf, sampleRate, uart]);
+    if (!effectiveBuf || effectiveBuf.length === 0) return [];
+    return decodeUartChunk(effectiveBuf, effectiveRate, uart.baud, uart.ch).slice(0, MAX_TICKER);
+  }, [effectiveBuf, effectiveRate, uart]);
 
   const i2cRows = useMemo(() => {
-    if (!frozenBuf || frozenBuf.length === 0) return [];
-    return decodeI2C(frozenBuf, sampleRate, i2c.scl, i2c.sda).slice(0, MAX_TICKER);
-  }, [frozenBuf, sampleRate, i2c]);
+    if (!effectiveBuf || effectiveBuf.length === 0) return [];
+    return decodeI2C(effectiveBuf, effectiveRate, i2c.scl, i2c.sda).slice(0, MAX_TICKER);
+  }, [effectiveBuf, effectiveRate, i2c]);
 
   const spiRows = useMemo(() => {
-    if (!frozenBuf || frozenBuf.length === 0) return [];
-    return decodeSPI(frozenBuf, sampleRate, spi.mosi, spi.miso, spi.sck, spi.cs, spi.mode, spi.bits, spi.csActiveLow).slice(0, MAX_TICKER);
-  }, [frozenBuf, sampleRate, spi]);
+    if (!effectiveBuf || effectiveBuf.length === 0) return [];
+    return decodeSPI(effectiveBuf, effectiveRate, spi.mosi, spi.miso, spi.sck, spi.cs, spi.mode, spi.bits, spi.csActiveLow).slice(0, MAX_TICKER);
+  }, [effectiveBuf, effectiveRate, spi]);
 
   return (
     <div className="flex flex-col h-full min-h-0">

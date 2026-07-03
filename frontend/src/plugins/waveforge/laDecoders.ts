@@ -27,6 +27,15 @@ export interface SPIFrame {
 
 export type DecoderTab = "uart" | "i2c" | "spi";
 
+export interface LaCapture {
+  sampleRate: number;
+  width: 8 | 16;
+  samples: Uint8Array;
+  source: string;
+  importedAt: string;
+  channelLabels?: string[];
+}
+
 export function decodeUartChunk(
   samples: Uint8Array,
   sampleRate: number,

@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import type { UsbTransport } from "./UsbTransport";
 import { WaveformLaLegacyView } from "./WaveformLaLegacyView";
 import { CollapsibleSection } from "./CollapsibleSection";
@@ -11,6 +11,9 @@ import { loadChannels, saveChannels } from "./laChannelConfig";
 import type { LaChannel } from "./laChannelConfig";
 import type { LaAcquireMode } from "./laAcquireModes";
 import type { LaTriggerConfig } from "./laAcquireModes";
+import type { LaCapture } from "./laDecoders";
+import { parseLaCsv, parseLaJson, detectLaFormat } from "./laImport";
+import { downloadLaCapture } from "./laExport";
 
 interface Props {
   transport: UsbTransport;
@@ -37,6 +40,8 @@ export function WaveformLaView(props: Props) {
   const [cursorA, setCursorA] = useState<Cursor>({ sample: 0, dragging: false });
   const [cursorB, setCursorB] = useState<Cursor>({ sample: 0, dragging: false });
   const [trigger, setTrigger] = useState<LaTriggerConfig>({ enabled: false, channel: 0, edge: "rise" });
+  const [capture, setCapture] = useState<LaCapture | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleChannelsChange = (next: LaChannel[]) => {
     saveChannels(next);
@@ -49,6 +54,28 @@ export function WaveformLaView(props: Props) {
   const handleRun = useCallback(() => setAcquireMode("running"), []);
   const handleStop = useCallback(() => setAcquireMode("stopped"), []);
   const handleSingle = useCallback(() => setAcquireMode("single-armed"), []);
+
+  const handleImport = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    const format = detectLaFormat(file.name, file.type);
+    let loaded: LaCapture;
+    if (format === "fob-json") {
+      loaded = parseLaJson(text);
+    } else {
+      loaded = parseLaCsv(text); // default CSV importer for .csv and unknown text
+    }
+    setCapture(loaded);
+    setSampleRate(loaded.sampleRate);
+    setWidth(loaded.width);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }, []);
+
+  const handleExport = useCallback(() => {
+    if (!capture) return;
+    downloadLaCapture(capture, `capture-${capture.sampleRate / 1e6}MHz-${capture.width}bit.csv`);
+  }, [capture]);
 
   if (useLegacy) {
     return (
@@ -96,7 +123,32 @@ export function WaveformLaView(props: Props) {
           Single
         </button>
         <span className="text-fob-text-dim">{acquireMode}</span>
+        {capture && (
+          <span className="text-fob-text-dim">
+            {capture.samples.length.toLocaleString()} samples @ {(capture.sampleRate / 1e6).toFixed(1)} MHz
+          </span>
+        )}
         <div className="flex-1" />
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".csv,.json,.sr"
+          onChange={handleImport}
+          className="hidden"
+        />
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          className="px-2 py-1 rounded text-xs bg-fob-surface border border-fob-border hover:bg-fob-border"
+        >
+          Import
+        </button>
+        <button
+          onClick={handleExport}
+          disabled={!capture}
+          className="px-2 py-1 rounded text-xs bg-fob-surface border border-fob-border hover:bg-fob-border disabled:text-fob-text-dim"
+        >
+          Export
+        </button>
         <button
           onClick={() => setUseLegacy(true)}
           className="px-2 py-1 rounded text-xs bg-fob-surface border border-fob-border hover:bg-fob-border"
@@ -114,7 +166,7 @@ export function WaveformLaView(props: Props) {
           </div>
           {/* Bottom decoders panel */}
           <div className="h-40 rounded border border-fob-border overflow-hidden bg-fob-surface shrink-0 min-w-0">
-            <LaDecodersPanel frozenBuf={null} sampleRate={sampleRate} running={isRunning} />
+            <LaDecodersPanel capture={capture} sampleRate={sampleRate} running={isRunning} />
           </div>
         </div>
 
@@ -144,7 +196,7 @@ export function WaveformLaView(props: Props) {
               cursorB={cursorB}
               onCursorAChange={setCursorA}
               onCursorBChange={setCursorB}
-              totalSamples={0}
+              totalSamples={capture?.samples.length ?? 0}
             />
           </CollapsibleSection>
         </div>
