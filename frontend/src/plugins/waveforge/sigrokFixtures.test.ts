@@ -71,11 +71,17 @@ describe("sigrok-dumps fixtures", () => {
     expect(spiResult.spi?.sck).toBe(0);
   });
 
-  it("decodes real SWD sigrok-dumps fixture", async () => {
+  it("auto-detects and decodes real SWD sigrok-dumps fixture", async () => {
     const cap = await parseSigrokSr(await loadFixture("init_write_0xabbabeeb.sr"));
     expect(cap.sampleRate).toBe(8_000_000);
     expect(cap.width).toBe(8);
     expect(cap.samples.length).toBeGreaterThan(0);
+
+    const detected = autoDetectLaProtocol(cap);
+    expect(detected.tab).toBe("swd");
+    expect(detected.swd?.swdio).toBe(1);
+    expect(detected.swd?.swclk).toBe(0);
+
     const cfg = inferDecoderDefaults(cap);
     expect(cfg.tab).toBe("swd");
     const frames = decodeSWD(cap.samples, cap.sampleRate, cfg.swd.swdio, cfg.swd.swclk);
@@ -94,11 +100,18 @@ describe("sigrok-dumps fixtures", () => {
     expect(frames.filter(f => f.type === "shift").length).toBeGreaterThan(0);
   });
 
-  it("decodes real Modbus RTU sigrok-dumps fixture", async () => {
+  it("auto-detects and decodes real Modbus RTU sigrok-dumps fixture", async () => {
     const cap = await parseSigrokSr(await loadFixture("wizmodbus.sr"));
     expect(cap.sampleRate).toBe(1_000_000);
     expect(cap.width).toBe(8);
     expect(cap.samples.length).toBeGreaterThan(0);
+
+    const detected = autoDetectLaProtocol(cap);
+    expect(detected.tab).toBe("modbus");
+    expect(detected.modbus?.ch).toBe(3);
+    expect(detected.modbus?.baud).toBe(9600);
+    expect(detected.modbus?.parity).toBe("none");
+
     // The fixture labels the TX line; the Modbus decoder expects the bus signal.
     const frames = decodeModbus(cap.samples, cap.sampleRate, 3, 9600, "none");
     expect(frames.length).toBeGreaterThan(0);

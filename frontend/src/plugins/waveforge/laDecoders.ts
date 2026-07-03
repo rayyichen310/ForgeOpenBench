@@ -157,6 +157,16 @@ export function inferDecoderDefaults(capture: LaCapture): DecoderDefaults {
   if (modbusCh >= 0) {
     return { tab: "modbus", uart: { baud: 115200, ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults };
   }
+  // TX/RX labels strongly indicate UART; prefer that over CAN/1-Wire fallbacks.
+  if (tx >= 0) {
+    return { tab: "uart", uart: { baud: estimateUartBaud(capture.samples, capture.sampleRate, uartCh), ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults };
+  }
+  if (canCh >= 0) {
+    return { tab: "can", uart: { baud: 115200, ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults };
+  }
+  if (oneWireCh >= 0) {
+    return { tab: "onewire", uart: { baud: 115200, ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults };
+  }
   return { tab: "uart", uart: { baud: estimateUartBaud(capture.samples, capture.sampleRate, uartCh), ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults };
 }
 
@@ -267,28 +277,38 @@ export function autoDetectLaProtocol(capture: LaCapture): AutoDetectResult {
   if (labelDefaults.tab === "uart" && labelDefaults.uart) {
     const rows = decodeUartChunk(samples, rate, labelDefaults.uart.baud, labelDefaults.uart.ch);
     const valid = rows.filter(r => !r.error).length;
-    if (valid > 0) return { tab: "uart", score: valid, reason: `UART ${labelDefaults.uart.baud.toLocaleString()} baud on D${labelDefaults.uart.ch} (labels)`, uart: labelDefaults.uart };
+    if (valid > 0) {
+      // If the same bytes also decode as valid Modbus RTU frames, prefer Modbus.
+      for (const parity of ["none", "even", "odd"] as const) {
+        const mbFrames = decodeModbus(samples, rate, labelDefaults.uart.ch, labelDefaults.uart.baud, parity);
+        const mbValid = mbFrames.filter(f => f.crcOk).length;
+        if (mbValid > 0) {
+          return { tab: "modbus", score: mbValid * 3, reason: `Modbus RTU ${labelDefaults.uart.baud.toLocaleString()} baud on D${labelDefaults.uart.ch} (labels)`, modbus: { ch: labelDefaults.uart.ch, baud: labelDefaults.uart.baud, parity } };
+        }
+      }
+      return { tab: "uart", score: valid, reason: `UART ${labelDefaults.uart.baud.toLocaleString()} baud on D${labelDefaults.uart.ch} (labels)`, uart: labelDefaults.uart };
+    }
   }
-  if (labelDefaults.can) {
+  if (labelDefaults.tab === "can" && labelDefaults.can) {
     const frames = decodeCAN(samples, rate, labelDefaults.can.ch, labelDefaults.can.baud);
     if (frames.length > 0) return { tab: "can", score: frames.length, reason: `CAN ${labelDefaults.can.baud.toLocaleString()} baud on D${labelDefaults.can.ch} (labels)`, can: labelDefaults.can };
   }
-  if (labelDefaults.onewire) {
+  if (labelDefaults.tab === "onewire" && labelDefaults.onewire) {
     const frames = decodeOneWire(samples, rate, labelDefaults.onewire.ch);
     const resetFrames = frames.filter(f => f.type === "reset" || f.type === "presence").length;
     if (resetFrames > 0) return { tab: "onewire", score: resetFrames, reason: `1-Wire on D${labelDefaults.onewire.ch} (labels)`, onewire: labelDefaults.onewire };
   }
-  if (labelDefaults.swd) {
+  if (labelDefaults.tab === "swd" && labelDefaults.swd) {
     const frames = decodeSWD(samples, rate, labelDefaults.swd.swdio, labelDefaults.swd.swclk);
     const resetFrames = frames.filter(f => f.type === "reset").length;
     if (resetFrames > 0) return { tab: "swd", score: resetFrames, reason: `SWD on D${labelDefaults.swd.swdio}/D${labelDefaults.swd.swclk} (labels)`, swd: labelDefaults.swd };
   }
-  if (labelDefaults.jtag) {
+  if (labelDefaults.tab === "jtag" && labelDefaults.jtag) {
     const frames = decodeJTAG(samples, rate, labelDefaults.jtag.tck, labelDefaults.jtag.tms, labelDefaults.jtag.tdi, labelDefaults.jtag.tdo);
     const stateFrames = frames.filter(f => f.type === "state" || f.type === "shift").length;
     if (stateFrames > 0) return { tab: "jtag", score: stateFrames, reason: `JTAG on D${labelDefaults.jtag.tck}/D${labelDefaults.jtag.tms}/D${labelDefaults.jtag.tdi}/D${labelDefaults.jtag.tdo} (labels)`, jtag: labelDefaults.jtag };
   }
-  if (labelDefaults.modbus) {
+  if (labelDefaults.tab === "modbus" && labelDefaults.modbus) {
     const frames = decodeModbus(samples, rate, labelDefaults.modbus.ch, labelDefaults.modbus.baud, labelDefaults.modbus.parity);
     const validFrames = frames.filter(f => f.crcOk).length;
     if (validFrames > 0) return { tab: "modbus", score: validFrames, reason: `Modbus RTU ${labelDefaults.modbus.baud.toLocaleString()} baud on D${labelDefaults.modbus.ch} (labels)`, modbus: labelDefaults.modbus };
