@@ -26,6 +26,7 @@ interface Props {
 
 const LABEL_WIDTH = DEFAULT_LABEL_WIDTH;
 const CH_GAP = 4;
+const RULER_H = 22;
 
 function formatTime(s: number): string {
   if (!isFinite(s)) return "—";
@@ -45,8 +46,9 @@ export function LaCanvas(props: Props) {
   const getChannelY = (idx: number, h: number) => {
     const used = props.channels.filter(c => c.visible);
     const count = Math.max(used.length, 1);
-    const rowH = (h - CH_GAP) / count;
-    const y = CH_GAP + idx * rowH + rowH * 0.5;
+    const plotH = h - RULER_H - CH_GAP;
+    const rowH = plotH / count;
+    const y = RULER_H + CH_GAP + idx * rowH + rowH * 0.5;
     return { y, rowH };
   };
 
@@ -81,13 +83,36 @@ export function LaCanvas(props: Props) {
     const pan = Math.max(0, Math.min(props.panSample ?? 0, Math.max(totalSamples - zoom, 0)));
     const sPerPx = zoom / plotW;
 
-    // Grid / time axis
+    // Time ruler
+    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--fob-surface").trim() || "#0b0c15";
+    ctx.fillRect(0, 0, W, RULER_H);
+    ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--fob-border").trim() || "#2a2d3e";
+    ctx.beginPath();
+    ctx.moveTo(0, RULER_H - 0.5);
+    ctx.lineTo(W, RULER_H - 0.5);
+    ctx.stroke();
+    const divCount = 10;
+    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--fob-text-dim").trim() || "#6b7280";
+    ctx.font = "9px monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    for (let i = 0; i <= divCount; i++) {
+      const x = LABEL_WIDTH + (plotW * i) / divCount;
+      const s = pan + (i / divCount) * zoom;
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, RULER_H);
+      ctx.stroke();
+      ctx.fillText(formatTime(s / props.sampleRate), x, RULER_H / 2);
+    }
+
+    // Grid
     ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--fob-border").trim() || "#2a2d3e";
     ctx.lineWidth = 1;
     ctx.beginPath();
-    for (let i = 0; i < 10; i++) {
-      const x = LABEL_WIDTH + (plotW * i) / 10;
-      ctx.moveTo(x, 0);
+    for (let i = 0; i <= divCount; i++) {
+      const x = LABEL_WIDTH + (plotW * i) / divCount;
+      ctx.moveTo(x, RULER_H);
       ctx.lineTo(x, H);
     }
     ctx.stroke();

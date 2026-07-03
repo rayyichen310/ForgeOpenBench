@@ -84,6 +84,21 @@ export function WaveformLaView(props: Props) {
     return decodeSPI(capture.samples, capture.sampleRate, decoderState.spi.mosi, decoderState.spi.miso, decoderState.spi.sck, decoderState.spi.cs, decoderState.spi.mode, decoderState.spi.bits, decoderState.spi.csActiveLow);
   }, [capture, decoderState]);
 
+  const totalSamples = useMemo(() => Math.floor((capture?.samples.length ?? 0) / ((capture?.width ?? 8) === 16 ? 2 : 1)), [capture]);
+  const handleZoomIn = useCallback(() => {
+    const zoom = zoomSamples ?? totalSamples;
+    setZoomSamples(Math.max(10, zoom * 0.8));
+  }, [zoomSamples, totalSamples]);
+  const handleZoomOut = useCallback(() => {
+    const zoom = zoomSamples ?? totalSamples;
+    const next = zoom * 1.25;
+    setZoomSamples(next >= totalSamples ? null : next);
+  }, [zoomSamples, totalSamples]);
+  const handleFit = useCallback(() => {
+    setZoomSamples(null);
+    setPanSample(0);
+  }, []);
+
   const handleImport = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -216,6 +231,15 @@ export function WaveformLaView(props: Props) {
       {/* Main area: canvas + right panel */}
       <div className="flex flex-1 gap-1 overflow-hidden min-h-0">
         <div className="flex flex-col flex-1 min-h-0 min-w-0 gap-1">
+          {/* Canvas toolbar */}
+          <div className="flex items-center gap-2 px-2 py-1 bg-fob-surface border border-fob-border rounded text-xs shrink-0">
+            <span className="text-fob-text-dim">Waveform</span>
+            <div className="flex-1" />
+            <button onClick={handleFit} disabled={!capture} className="px-2 py-0.5 rounded bg-fob-surface hover:bg-fob-border disabled:text-fob-text-dim" title="Fit entire capture">Fit</button>
+            <button onClick={handleZoomOut} disabled={!capture} className="px-2 py-0.5 rounded bg-fob-surface hover:bg-fob-border disabled:text-fob-text-dim" title="Zoom out">−</button>
+            <button onClick={handleZoomIn} disabled={!capture} className="px-2 py-0.5 rounded bg-fob-surface hover:bg-fob-border disabled:text-fob-text-dim" title="Zoom in">+</button>
+            <span className="text-fob-text-dim w-24 text-right">{capture ? `${(zoomSamples ?? totalSamples).toLocaleString()} smp` : "—"}</span>
+          </div>
           {/* Main waveform canvas with decoder annotations */}
           <div className="flex-1 rounded border border-fob-border overflow-hidden bg-fob-surface min-h-0 min-w-0 select-none">
             {capture && capture.samples.length > 0 ? (
