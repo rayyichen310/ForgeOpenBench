@@ -93,19 +93,31 @@ async function inflate(data: Uint8Array): Promise<Uint8Array> {
 export async function parseSigrokSr(buffer: ArrayBuffer): Promise<LaCapture> {
   const entries = await unzipAll(buffer);
   const metaEntry = entries.find(e => e.name === "metadata");
-  const logicEntry = entries.find(e => e.name.startsWith("logic-1"));
-  if (!metaEntry || !logicEntry) throw new Error(".sr file missing metadata or logic-1");
+  if (!metaEntry) throw new Error(".sr file missing metadata");
 
   const metaText = textDecoder(metaEntry.data, 0, metaEntry.data.length);
   const params = parseSigrokMetadata(metaText);
-  const sampleRate = Number(params["samplerate"] ?? 0);
+  const sampleRate = parseSampleRate(params["samplerate"] ?? "0");
   const unitsize = Number(params["unitsize"] ?? 1);
-  const totalSamples = Number(params["total samples"] ?? 0);
   if (!Number.isFinite(sampleRate) || sampleRate <= 0) throw new Error("Invalid sigrok sample rate");
   if (![1, 2].includes(unitsize)) throw new Error(`Unsupported sigrok unitsize: ${unitsize}`);
 
+  // Sigrok splits long captures into logic-1, logic-1-1, logic-1-2, ...
+  const capturefile = params["capturefile"] ?? "logic-1";
+  const logicEntries = entries
+    .filter(e => e.name === capturefile || e.name.startsWith(`${capturefile}-`))
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  if (logicEntries.length === 0) throw new Error(".sr file missing logic data");
+
+  const totalData = logicEntries.reduce((sum, e) => sum + e.data.length, 0);
+  const totalSamples = Number(params["total samples"] ?? 0) || Math.floor(totalData / unitsize);
   const samples = new Uint8Array(totalSamples * unitsize);
-  samples.set(logicEntry.data.slice(0, samples.length));
+  let off = 0;
+  for (const e of logicEntries) {
+    const take = Math.min(e.data.length, samples.length - off);
+    samples.set(e.data.slice(0, take), off);
+    off += take;
+  }
   const width = unitsize === 2 ? 16 : 8;
 
   return {
@@ -126,4 +138,19 @@ function parseSigrokMetadata(text: string): Record<string, string> {
     if (idx > 0) params[trimmed.slice(0, idx).trim().toLowerCase()] = trimmed.slice(idx + 1).trim();
   }
   return params;
+}
+
+function parseSampleRate(value: string): number {
+  const cleaned = value.trim().toLowerCase().replace(/\s+/g, " ");
+  const num = Number(cleaned);
+  if (Number.isFinite(num)) return num;
+  const match = cleaned.match(/^([0-9.]+)\s*(hz|khz|mhz|ghz)?$/);
+  if (!match) return NaN;
+  const n = Number(match[1]);
+  const unit = match[2] ?? "hz";
+  if (unit === "hz") return n;
+  if (unit === "khz") return n * 1e3;
+  if (unit === "mhz") return n * 1e6;
+  if (unit === "ghz") return n * 1e9;
+  return n;
 }
