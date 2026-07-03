@@ -23,9 +23,10 @@ interface Cursor {
   dragging: boolean;
 }
 
-// PR2 Phase 5 — DSO-style layout skeleton with Channels, Acquire, Cursors,
-// and bottom-docked Decoders panels. The state machine is not yet driving the
-// legacy capture loop; that wiring happens in Phase 7.
+// PR2 Phase 7 — DSO-style layout skeleton with Channels, Acquire, Trigger,
+// Cursors, and bottom-docked Decoders panels. The acquire state machine is
+// implemented and tested but not yet driving the live capture loop; that
+// wiring is the next PR (live capture migration + data flow).
 export function WaveformLaView(props: Props) {
   const [channels, setChannels] = useState<LaChannel[]>(loadChannels);
   const [sampleRate, setSampleRate] = useState(12_000_000);
