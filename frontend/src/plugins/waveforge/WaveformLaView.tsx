@@ -42,10 +42,32 @@ export function WaveformLaView(props: Props) {
     setChannels(next);
   };
 
+  const [useLegacy, setUseLegacy] = useState(false);
+
   const isRunning = acquireMode === "running" || acquireMode === "single-armed";
   const handleRun = useCallback(() => setAcquireMode("running"), []);
   const handleStop = useCallback(() => setAcquireMode("stopped"), []);
   const handleSingle = useCallback(() => setAcquireMode("single-armed"), []);
+
+  if (useLegacy) {
+    return (
+      <div className="flex flex-col h-full">
+        <div className="flex items-center gap-2 px-3 py-2 border-b border-fob-border bg-fob-surface shrink-0">
+          <span className="text-fob-text-dim text-xs">Legacy LA view</span>
+          <div className="flex-1" />
+          <button
+            onClick={() => setUseLegacy(false)}
+            className="px-2 py-1 rounded text-xs bg-fob-surface border border-fob-border hover:bg-fob-border"
+          >
+            New view
+          </button>
+        </div>
+        <div className="flex-1 min-h-0">
+          <WaveformLaLegacyView {...props} />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-full bg-fob-surface text-fob-text font-mono text-xs select-none">
@@ -73,6 +95,13 @@ export function WaveformLaView(props: Props) {
           Single
         </button>
         <span className="text-fob-text-dim">{acquireMode}</span>
+        <div className="flex-1" />
+        <button
+          onClick={() => setUseLegacy(true)}
+          className="px-2 py-1 rounded text-xs bg-fob-surface border border-fob-border hover:bg-fob-border"
+        >
+          Legacy
+        </button>
       </div>
 
       {/* Main area: canvas + right panel */}
