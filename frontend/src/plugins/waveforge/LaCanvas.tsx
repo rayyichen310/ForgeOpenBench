@@ -1,7 +1,7 @@
 import { useRef, useEffect, useCallback } from "react";
 import type { LaChannel } from "./laChannelConfig";
 import { CHANNEL_COLORS, DEFAULT_LABEL_WIDTH } from "./laChannelConfig";
-import type { DecoderTab, TickerRow, I2CFrame, SPIFrame } from "./laDecoders";
+import type { DecoderTab, TickerRow, I2CFrame, SPIFrame, CANFrame } from "./laDecoders";
 
 interface Props {
   samples: Uint8Array;
@@ -14,9 +14,11 @@ interface Props {
   decoderRows?: TickerRow[];
   i2cRows?: I2CFrame[];
   spiRows?: SPIFrame[];
+  canRows?: CANFrame[];
   decoderChannel?: number;
   decoderSda?: number;
   decoderMosi?: number;
+  decoderCan?: number;
   showCursors?: boolean;
   cursorA?: number;
   cursorB?: number;
@@ -210,6 +212,19 @@ export function LaCanvas(props: Props) {
         props.spiRows.forEach(r => {
           if (r.mosi !== undefined) drawBubble(r.startSample, chIdx, `M0x${r.mosi.toString(16).padStart(digits, "0").toUpperCase()}`, color);
           else if (r.miso !== undefined) drawBubble(r.startSample, chIdx, `S0x${r.miso.toString(16).padStart(digits, "0").toUpperCase()}`, color);
+        });
+      }
+    }
+    if (props.decoderTab === "can" && props.canRows) {
+      const chIdx = visible.findIndex(c => c.id === props.decoderCan);
+      if (chIdx >= 0) {
+        const color = visible[chIdx]?.color || CHANNEL_COLORS[props.decoderCan ?? 0];
+        props.canRows.forEach(r => {
+          const label = r.extended ? `ExtID 0x${r.id.toString(16).toUpperCase()}` : `ID 0x${r.id.toString(16).toUpperCase()}`;
+          drawBubble(r.startSample, chIdx, label, color);
+          if (r.data.length > 0) {
+            drawBubble(r.endSample, chIdx, r.data.map(b => b.toString(16).padStart(2, "0").toUpperCase()).join(" "), color);
+          }
         });
       }
     }

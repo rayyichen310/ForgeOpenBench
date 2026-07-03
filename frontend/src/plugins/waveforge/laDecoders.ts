@@ -25,7 +25,19 @@ export interface SPIFrame {
   miso?: number;
 }
 
-export type DecoderTab = "uart" | "i2c" | "spi";
+export interface CANFrame {
+  startSample: number;
+  endSample: number;
+  ts: number;
+  id: number;
+  extended: boolean;
+  rtr: boolean;
+  dlc: number;
+  data: number[];
+  error?: boolean;
+}
+
+export type DecoderTab = "uart" | "i2c" | "spi" | "can";
 
 export interface LaCapture {
   sampleRate: number;
@@ -41,6 +53,7 @@ export interface DecoderDefaults {
   uart: { baud: number; ch: number };
   i2c: { scl: number; sda: number; addrBits: 7 | 8 };
   spi: { mosi: number; miso: number; sck: number; cs: number; mode: 0 | 1 | 2 | 3; bits: 8 | 16; csActiveLow: boolean };
+  can: { ch: number; baud: number };
 }
 
 export function inferDecoderDefaults(capture: LaCapture): DecoderDefaults {
@@ -62,19 +75,21 @@ export function inferDecoderDefaults(capture: LaCapture): DecoderDefaults {
   const cs = find(["cs", "ss", "nss"]);
 
   const uartCh = tx >= 0 ? tx : 0;
+  const canCh = find(["can", "canrx", "can_rx", "rx"]);
+  const canDefaults = { ch: canCh >= 0 ? canCh : 0, baud: 500000 };
   if (scl >= 0 && sda >= 0) {
-    return { tab: "i2c", uart: { baud: 115200, ch: uartCh }, i2c: { scl, sda, addrBits: 7 }, spi: { mosi: mosi >= 0 ? mosi : 0, miso: miso >= 0 ? miso : 0, sck: sck >= 0 ? sck : 1, cs: cs >= 0 ? cs : -1, mode: 0, bits: 8, csActiveLow: true } };
+    return { tab: "i2c", uart: { baud: 115200, ch: uartCh }, i2c: { scl, sda, addrBits: 7 }, spi: { mosi: mosi >= 0 ? mosi : 0, miso: miso >= 0 ? miso : 0, sck: sck >= 0 ? sck : 1, cs: cs >= 0 ? cs : -1, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults };
   }
   const definedLabels = labels.filter((l) => l !== undefined && l !== "");
   const allNumeric = definedLabels.length > 0 && definedLabels.every(l => /^\d+$/.test(l));
   const detected = detectSpiChannels(capture.samples, capture.width);
   if ((mosi >= 0 && sck >= 0) || (sck >= 0 && cs >= 0)) {
-    return { tab: "spi", uart: { baud: 115200, ch: uartCh }, i2c: { scl: scl >= 0 ? scl : 1, sda: sda >= 0 ? sda : 2, addrBits: 7 }, spi: { mosi: mosi >= 0 ? mosi : 0, miso: miso >= 0 ? miso : 1, sck: sck >= 0 ? sck : 2, cs: cs >= 0 ? cs : -1, mode: 0, bits: 8, csActiveLow: true } };
+    return { tab: "spi", uart: { baud: 115200, ch: uartCh }, i2c: { scl: scl >= 0 ? scl : 1, sda: sda >= 0 ? sda : 2, addrBits: 7 }, spi: { mosi: mosi >= 0 ? mosi : 0, miso: miso >= 0 ? miso : 1, sck: sck >= 0 ? sck : 2, cs: cs >= 0 ? cs : -1, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults };
   }
   if (capture.source === "sigrok-sr" && allNumeric && definedLabels.length <= 4) {
-    return { tab: "spi", uart: { baud: 115200, ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: -1, mode: 0, bits: 8, csActiveLow: true } };
+    return { tab: "spi", uart: { baud: 115200, ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: -1, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults };
   }
-  return { tab: "uart", uart: { baud: estimateUartBaud(capture.samples, capture.sampleRate, uartCh), ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true } };
+  return { tab: "uart", uart: { baud: estimateUartBaud(capture.samples, capture.sampleRate, uartCh), ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults };
 }
 
 export function estimateUartBaud(samples: Uint8Array, sampleRate: number, ch: number): number {
@@ -153,6 +168,7 @@ export interface AutoDetectResult {
   uart?: { baud: number; ch: number };
   i2c?: { scl: number; sda: number; addrBits: 7 | 8 };
   spi?: { mosi: number; miso: number; sck: number; cs: number; mode: 0 | 1 | 2 | 3; bits: 8 | 16 };
+  can?: { ch: number; baud: number };
 }
 
 /**
@@ -180,6 +196,10 @@ export function autoDetectLaProtocol(capture: LaCapture): AutoDetectResult {
     const rows = decodeUartChunk(samples, rate, labelDefaults.uart.baud, labelDefaults.uart.ch);
     const valid = rows.filter(r => !r.error).length;
     if (valid > 0) return { tab: "uart", score: valid, reason: `UART ${labelDefaults.uart.baud.toLocaleString()} baud on D${labelDefaults.uart.ch} (labels)`, uart: labelDefaults.uart };
+  }
+  if (labelDefaults.can) {
+    const frames = decodeCAN(samples, rate, labelDefaults.can.ch, labelDefaults.can.baud);
+    if (frames.length > 0) return { tab: "can", score: frames.length, reason: `CAN ${labelDefaults.can.baud.toLocaleString()} baud on D${labelDefaults.can.ch} (labels)`, can: labelDefaults.can };
   }
 
   const active = getActiveChannels(samples, width);
@@ -214,6 +234,16 @@ export function autoDetectLaProtocol(capture: LaCapture): AutoDetectResult {
     const frames = decodeSPI(samples, rate, detected.mosi, detected.miso, detected.sck, -1, mode, 8, true);
     if (frames.length > best.score) {
       best = { tab: "spi", score: frames.length, reason: `SPI mode ${mode} on D${detected.mosi}/D${detected.sck}`, spi: { ...detected, mode, bits: 8, cs: -1 } };
+    }
+  }
+
+  // CAN: try each active channel at common baud rates.
+  for (const ch of active) {
+    for (const baud of CAN_COMMON_BAUDS) {
+      const frames = decodeCAN(samples, rate, ch, baud);
+      if (frames.length > best.score) {
+        best = { tab: "can", score: frames.length, reason: `CAN ${baud.toLocaleString()} baud on D${ch}`, can: { ch, baud } };
+      }
     }
   }
 
@@ -431,6 +461,132 @@ export function decodeSPI(
   return rows;
 }
 
+// ---------------------------------------------------------------------------
+// CAN decoder
+// ---------------------------------------------------------------------------
+
+const CAN_COMMON_BAUDS = [125000, 250000, 500000, 800000, 1000000];
+
+export function estimateCanBaud(samples: Uint8Array, sampleRate: number, ch: number): number {
+  const widths: number[] = [];
+  let last = 1;
+  let lastS = 0;
+  for (let s = 0; s < samples.length; s++) {
+    const v = (samples[s] >> ch) & 1;
+    if (v !== last) {
+      widths.push(s - lastS);
+      last = v;
+      lastS = s;
+    }
+  }
+  const positive = widths.filter(w => w > 0).sort((a, b) => a - b);
+  if (positive.length === 0) return 500000;
+  const minW = positive[0]!;
+  const short = positive.filter(w => w <= minW * 3);
+  const bitW = short[Math.floor(short.length / 2)] ?? minW;
+  const baud = Math.round(sampleRate / bitW);
+  let best = 500000;
+  let bestErr = Infinity;
+  for (const b of CAN_COMMON_BAUDS) {
+    const err = Math.abs(baud - b);
+    if (err < bestErr) { bestErr = err; best = b; }
+  }
+  return best;
+}
+
+export function decodeCAN(
+  samples: Uint8Array,
+  sampleRate: number,
+  channel: number,
+  baud: number
+): CANFrame[] {
+  const spb = sampleRate / baud;
+  const bit = (s: number) => (samples[Math.max(0, Math.min(samples.length - 1, s))] >> channel) & 1;
+  const frames: CANFrame[] = [];
+  let i = 0;
+  while (i < samples.length - 1) {
+    // Look for recessive -> dominant edge (SOF)
+    if (bit(i) === 1 && bit(i + 1) === 0) {
+      const sof = i + 1;
+      const sampleBit = (n: number) => bit(Math.round(sof + (n + 0.5) * spb));
+      const read = (n: number, len: number) => {
+        let v = 0;
+        for (let k = 0; k < len; k++) v = (v << 1) | sampleBit(n + k);
+        return v;
+      };
+      let n = 0; // after SOF
+      // SOF
+      const sofBit = sampleBit(0);
+      if (sofBit !== 0) { i++; continue; }
+      n = 1;
+      // Arbitration: 11-bit ID
+      const id = read(n, 11);
+      n += 11;
+      let rtr = sampleBit(n++) === 1;
+      const ide = sampleBit(n++);
+      sampleBit(n++); // r0
+      let extended = false;
+      let extId = 0;
+      if (ide === 1) {
+        // Extended frame: SRR + 18-bit extended ID + IDE + RTR + r1 + r0
+        extended = true;
+        const srr = sampleBit(n++);
+        extId = read(n, 18);
+        n += 18;
+        const ide2 = sampleBit(n++);
+        const rtr2 = sampleBit(n++);
+        if (srr !== 1 || ide2 !== 1) { i++; continue; }
+        rtr = rtr2 === 1;
+        sampleBit(n++); // r1
+        sampleBit(n++); // r0 extended
+      }
+      // Control: DLC (4 bits)
+      const dlc = read(n, 4);
+      n += 4;
+      const dataLen = Math.min(8, dlc);
+      // Data field
+      const data: number[] = [];
+      for (let b = 0; b < dataLen; b++) {
+        data.push(read(n, 8));
+        n += 8;
+      }
+      // CRC 15 bits (skip destuffing for this basic decoder)
+      read(n, 15);
+      n += 15;
+      // CRC delimiter
+      const crcDelimOk = sampleBit(n++) === 1;
+      // ACK slot
+      const ack = sampleBit(n++);
+      sampleBit(n++); // ack delimiter
+      // EOF: 7 recessive bits
+      let eofOk = true;
+      for (let k = 0; k < 7; k++) if (sampleBit(n + k) !== 1) eofOk = false;
+      n += 7;
+      const endSample = Math.min(samples.length - 1, Math.round(sof + n * spb));
+      const error = ack !== 0 || !crcDelimOk || !eofOk;
+      if (!error) {
+        frames.push({
+          startSample: sof,
+          endSample,
+          ts: sof / sampleRate,
+          id: extended ? ((id << 18) | extId) : id,
+          extended,
+          rtr,
+          dlc,
+          data,
+          error,
+        });
+        if (frames.length > MAX_TICKER) break;
+      }
+      // Advance to after EOF or just past this frame
+      i = endSample + 1;
+      continue;
+    }
+    i++;
+  }
+  return frames;
+}
+
 // Generate a synthetic LA capture for offline decoder/UX testing.
 // UART on D0, I2C on D1/D2, SPI on D3-D6 at 1 MHz 8-bit.
 export function generateLaTestPattern(sampleRate: number, durationS: number): Uint8Array {
@@ -515,6 +671,60 @@ export function generateLaTestPattern(sampleRate: number, durationS: number): Ui
       byte |= spiBits[si].cs << 6;
     }
     samples[s] = byte;
+  }
+  return samples;
+}
+
+// Generate a single CAN standard frame bit stream (MSB-first) on the given channel.
+// Does not include bit stuffing; suitable for decoder unit tests.
+export function generateCanFrame(
+  sampleRate: number,
+  baud: number,
+  channel: number,
+  id: number,
+  data: number[],
+  rtr = false
+): Uint8Array {
+  const spb = Math.max(1, Math.floor(sampleRate / baud));
+  const bits: number[] = [];
+  const pushBits = (v: number, len: number) => {
+    for (let i = len - 1; i >= 0; i--) bits.push((v >> i) & 1);
+  };
+  // SOF
+  bits.push(0);
+  // 11-bit ID
+  pushBits(id & 0x7FF, 11);
+  // RTR + IDE + r0
+  bits.push(rtr ? 1 : 0);
+  bits.push(0); // IDE
+  bits.push(0); // r0
+  // DLC
+  pushBits(Math.min(8, data.length), 4);
+  // Data
+  for (const b of data) pushBits(b, 8);
+  // CRC 15 bits (zeros for test)
+  pushBits(0, 15);
+  // CRC delimiter + ACK slot + ACK delimiter + EOF (7 recessive)
+  bits.push(1, 0, 1, 1, 1, 1, 1, 1, 1);
+  // IFS (3 recessive)
+  bits.push(1, 1, 1);
+
+  // Add leading and trailing idle recessive bits so the decoder can locate SOFs.
+  const idleBits = 4;
+  const totalSamples = (idleBits + bits.length + idleBits) * spb;
+  const samples = new Uint8Array(totalSamples);
+  for (let i = 0; i < idleBits; i++) {
+    for (let j = 0; j < spb; j++) samples[i * spb + j] = 1 << channel;
+  }
+  for (let i = 0; i < bits.length; i++) {
+    for (let j = 0; j < spb; j++) {
+      samples[(idleBits + i) * spb + j] = bits[i] << channel;
+    }
+  }
+  for (let i = 0; i < idleBits; i++) {
+    for (let j = 0; j < spb; j++) {
+      samples[(idleBits + bits.length + i) * spb + j] = 1 << channel;
+    }
   }
   return samples;
 }

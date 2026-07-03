@@ -4,8 +4,10 @@ import {
   decodeUartChunk,
   decodeI2C,
   decodeSPI,
+  decodeCAN,
   generateLaTestPattern,
   makeFakeUartSignal,
+  generateCanFrame,
   MAX_TICKER,
   inferDecoderDefaults,
   autoDetectLaProtocol,
@@ -413,6 +415,48 @@ describe("autoDetectLaProtocol", () => {
     const samples = generateLaTestPattern(1_000_000, 1);
     const result = autoDetectLaProtocol(cap(samples, 1_000_000));
     expect(result.score).toBeGreaterThan(0);
-    expect(result.tab).toMatch(/^(uart|i2c|spi)$/);
+    expect(result.tab).toMatch(/^(uart|i2c|spi|can)$/);
+  });
+  it("returns a positive score for a CAN signal", () => {
+    const samples = generateCanFrame(1_000_000, 500_000, 3, 0x123, [0xDE, 0xAD, 0xBE, 0xEF]);
+    const result = autoDetectLaProtocol({ ...cap(samples, 1_000_000), channelLabels: ["", "", "", "CAN"] });
+    expect(result.score).toBeGreaterThan(0);
+    expect(result.tab).toBe("can");
+    expect(result.can).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// decodeCAN
+// ---------------------------------------------------------------------------
+
+describe("decodeCAN", () => {
+  it("decodes a standard 11-bit data frame", () => {
+    const samples = generateCanFrame(1_000_000, 500_000, 0, 0x123, [0xDE, 0xAD]);
+    const frames = decodeCAN(samples, 1_000_000, 0, 500_000);
+    expect(frames).toHaveLength(1);
+    expect(frames[0].id).toBe(0x123);
+    expect(frames[0].dlc).toBe(2);
+    expect(frames[0].data).toEqual([0xDE, 0xAD]);
+    expect(frames[0].extended).toBe(false);
+    expect(frames[0].rtr).toBe(false);
+  });
+
+  it("decodes on a non-zero channel", () => {
+    const samples = generateCanFrame(1_000_000, 250_000, 5, 0x7FF, [0x01]);
+    const frames = decodeCAN(samples, 1_000_000, 5, 250_000);
+    expect(frames).toHaveLength(1);
+    expect(frames[0].id).toBe(0x7FF);
+  });
+
+  it("decodes multiple consecutive frames", () => {
+    const f1 = generateCanFrame(1_000_000, 500_000, 0, 0x100, [0x01]);
+    const f2 = generateCanFrame(1_000_000, 500_000, 0, 0x101, [0x02]);
+    const combined = new Uint8Array(f1.length + f2.length);
+    combined.set(f1, 0);
+    combined.set(f2, f1.length);
+    const frames = decodeCAN(combined, 1_000_000, 0, 500_000);
+    expect(frames).toHaveLength(2);
+    expect(frames.map(f => f.id)).toEqual([0x100, 0x101]);
   });
 });

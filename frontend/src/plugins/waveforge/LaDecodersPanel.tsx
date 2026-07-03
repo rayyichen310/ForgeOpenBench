@@ -1,11 +1,12 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
-import { decodeUartChunk, decodeI2C, decodeSPI, autoDetectLaProtocol, MAX_TICKER } from "./laDecoders";
+import { decodeUartChunk, decodeI2C, decodeSPI, decodeCAN, autoDetectLaProtocol, MAX_TICKER } from "./laDecoders";
 import type { DecoderTab, LaCapture, AutoDetectResult } from "./laDecoders";
 import { DEFAULT_BAUDS } from "./laChannelConfig";
 
 interface UartConfig { baud: number; ch: number; }
 interface I2cConfig { scl: number; sda: number; addrBits: 7 | 8; }
 interface SpiConfig { mosi: number; miso: number; sck: number; cs: number; mode: 0 | 1 | 2 | 3; bits: 8 | 16; csActiveLow: boolean; }
+interface CanConfig { ch: number; baud: number; }
 
 interface Props {
   frozenBuf?: Uint8Array | null;
@@ -15,8 +16,9 @@ interface Props {
   defaultUart?: UartConfig;
   defaultI2c?: I2cConfig;
   defaultSpi?: SpiConfig;
+  defaultCan?: CanConfig;
   suggestedTab?: DecoderTab;
-  onChange?: (state: { tab: DecoderTab; uart: UartConfig; i2c: I2cConfig; spi: SpiConfig }) => void;
+  onChange?: (state: { tab: DecoderTab; uart: UartConfig; i2c: I2cConfig; spi: SpiConfig; can: CanConfig }) => void;
 }
 
 function ascii(b: number) {
@@ -27,13 +29,14 @@ function fmt(ts: number) {
   return ts < 1e-3 ? `${(ts * 1e6).toFixed(0)}µs` : `${(ts * 1e3).toFixed(2)}ms`;
 }
 
-export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defaultUart, defaultI2c, defaultSpi, suggestedTab, onChange }: Props) {
+export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defaultUart, defaultI2c, defaultSpi, defaultCan, suggestedTab, onChange }: Props) {
   const effectiveBuf = capture?.samples ?? frozenBuf ?? null;
   const effectiveRate = capture?.sampleRate ?? sampleRate ?? 0;
   const [tab, setTab] = useState<DecoderTab>(suggestedTab ?? "uart");
   const [uart, setUart] = useState<UartConfig>(defaultUart ?? { baud: 115200, ch: 0 });
   const [i2c, setI2c] = useState<I2cConfig>(defaultI2c ?? { scl: 1, sda: 2, addrBits: 7 });
   const [spi, setSpi] = useState<SpiConfig>(defaultSpi ?? { mosi: 3, miso: 4, sck: 5, cs: 6, mode: 0, bits: 8, csActiveLow: true });
+  const [can, setCan] = useState<CanConfig>(defaultCan ?? { ch: 0, baud: 500000 });
   const [lastAutoDetect, setLastAutoDetect] = useState<AutoDetectResult | null>(null);
 
   useEffect(() => {
@@ -42,7 +45,8 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
   useEffect(() => { if (defaultUart) setUart(defaultUart); }, [defaultUart]);
   useEffect(() => { if (defaultI2c) setI2c(defaultI2c); }, [defaultI2c]);
   useEffect(() => { if (defaultSpi) setSpi(defaultSpi); }, [defaultSpi]);
-  useEffect(() => { onChange?.({ tab, uart, i2c, spi }); }, [tab, uart, i2c, spi, onChange]);
+  useEffect(() => { if (defaultCan) setCan(defaultCan); }, [defaultCan]);
+  useEffect(() => { onChange?.({ tab, uart, i2c, spi, can }); }, [tab, uart, i2c, spi, can, onChange]);
 
   const handleAutoDetect = useCallback(() => {
     if (!effectiveBuf || effectiveBuf.length === 0 || effectiveRate <= 0) return;
@@ -53,6 +57,7 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
     if (result.uart) setUart(result.uart);
     if (result.i2c) setI2c(result.i2c);
     if (result.spi) setSpi(s => ({ ...result.spi!, csActiveLow: s.csActiveLow }));
+    if (result.can) setCan(result.can);
   }, [effectiveBuf, effectiveRate, capture]);
 
   const uartRows = useMemo(() => {
@@ -70,11 +75,16 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
     return decodeSPI(effectiveBuf, effectiveRate, spi.mosi, spi.miso, spi.sck, spi.cs, spi.mode, spi.bits, spi.csActiveLow).slice(0, MAX_TICKER);
   }, [effectiveBuf, effectiveRate, spi]);
 
+  const canRows = useMemo(() => {
+    if (!effectiveBuf || effectiveBuf.length === 0) return [];
+    return decodeCAN(effectiveBuf, effectiveRate, can.ch, can.baud).slice(0, MAX_TICKER);
+  }, [effectiveBuf, effectiveRate, can]);
+
   return (
     <div className="flex flex-col h-full min-h-0">
       {/* Tabs */}
       <div className="flex items-center gap-1 px-2 py-1 bg-fob-surface border-b border-fob-border text-xs shrink-0">
-        {(["uart", "i2c", "spi"] as DecoderTab[]).map(t => (
+        {(["uart", "i2c", "spi", "can"] as DecoderTab[]).map(t => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -230,6 +240,42 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
                   <span className="text-fob-text-dim w-16 shrink-0">{fmt(r.ts)}</span>
                   <span className="text-fob-blue shrink-0">MOSI 0x{r.mosi?.toString(16).padStart(spi.bits / 4, "0").toUpperCase() ?? "--"}</span>
                   <span className="text-fob-green shrink-0">MISO 0x{r.miso?.toString(16).padStart(spi.bits / 4, "0").toUpperCase() ?? "--"}</span>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* CAN */}
+      {tab === "can" && (
+        <div className="flex flex-col flex-1 min-h-0">
+          <div className="flex items-center gap-2 px-2 py-1 bg-fob-surface border-b border-fob-border text-xs shrink-0 flex-wrap">
+            <span className="text-fob-text-dim">CH:</span>
+            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14"
+              value={can.ch} onChange={e => setCan(c => ({ ...c, ch: Number(e.target.value) }))}>
+              {Array.from({ length: 16 }, (_, i) => <option key={i} value={i}>D{i}</option>)}
+            </select>
+            <span className="text-fob-text-dim">Baud:</span>
+            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5"
+              value={can.baud} onChange={e => setCan(c => ({ ...c, baud: Number(e.target.value) }))}>
+              {[125000, 250000, 500000, 800000, 1000000].map(b => <option key={b} value={b}>{(b / 1000).toFixed(0)}k</option>)}
+            </select>
+          </div>
+          <div className="flex-1 overflow-y-auto font-mono text-[11px] px-2 py-1 space-y-0">
+            {canRows.length === 0 ? (
+              <div className="text-fob-text-dim text-center mt-4">
+                {running ? "Stop capture to decode CAN" : "No CAN frames — check channel and baud rate"}
+              </div>
+            ) : (
+              canRows.map((r, i) => (
+                <div key={i} className={`flex gap-3 leading-5 ${r.error ? "text-fob-red" : "text-fob-text"}`}>
+                  <span className="text-fob-text-dim w-16 shrink-0">{fmt(r.ts)}</span>
+                  <span className="text-fob-blue shrink-0">{r.extended ? "Ext" : "Std"}</span>
+                  <span className="text-fob-yellow shrink-0">ID 0x{r.id.toString(16).toUpperCase()}</span>
+                  <span className="text-fob-text-dim shrink-0">DLC {r.dlc}</span>
+                  <span className="text-fob-green shrink-0">{r.data.map(b => b.toString(16).padStart(2, "0").toUpperCase()).join(" ")}</span>
+                  {r.error && <span className="text-fob-red">⚠</span>}
                 </div>
               ))
             )}
