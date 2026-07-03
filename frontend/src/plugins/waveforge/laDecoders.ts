@@ -45,7 +45,19 @@ export interface OneWireFrame {
   value?: number;
 }
 
-export type DecoderTab = "uart" | "i2c" | "spi" | "can" | "onewire";
+export interface SWDFrame {
+  startSample: number;
+  endSample: number;
+  ts: number;
+  type: "reset" | "request" | "data";
+  apnDp?: 0 | 1;
+  read?: boolean;
+  addr?: number;
+  data?: number;
+  ok?: boolean;
+}
+
+export type DecoderTab = "uart" | "i2c" | "spi" | "can" | "onewire" | "swd";
 
 export interface LaCapture {
   sampleRate: number;
@@ -63,6 +75,7 @@ export interface DecoderDefaults {
   spi: { mosi: number; miso: number; sck: number; cs: number; mode: 0 | 1 | 2 | 3; bits: 8 | 16; csActiveLow: boolean };
   can: { ch: number; baud: number };
   onewire: { ch: number };
+  swd: { swdio: number; swclk: number };
 }
 
 export function inferDecoderDefaults(capture: LaCapture): DecoderDefaults {
@@ -88,19 +101,22 @@ export function inferDecoderDefaults(capture: LaCapture): DecoderDefaults {
   const canDefaults = { ch: canCh >= 0 ? canCh : 0, baud: 500000 };
   const oneWireCh = find(["onewire", "1wire", "1w", "ow", "dq"]);
   const oneWireDefaults = { ch: oneWireCh >= 0 ? oneWireCh : 0 };
+  const swdClk = find(["swclk", "swclktdi"]);
+  const swdDio = find(["swdio", "swdio TMS"]);
+  const swdDefaults = { swclk: swdClk >= 0 ? swdClk : 0, swdio: swdDio >= 0 ? swdDio : 1 };
   if (scl >= 0 && sda >= 0) {
-    return { tab: "i2c", uart: { baud: 115200, ch: uartCh }, i2c: { scl, sda, addrBits: 7 }, spi: { mosi: mosi >= 0 ? mosi : 0, miso: miso >= 0 ? miso : 0, sck: sck >= 0 ? sck : 1, cs: cs >= 0 ? cs : -1, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults };
+    return { tab: "i2c", uart: { baud: 115200, ch: uartCh }, i2c: { scl, sda, addrBits: 7 }, spi: { mosi: mosi >= 0 ? mosi : 0, miso: miso >= 0 ? miso : 0, sck: sck >= 0 ? sck : 1, cs: cs >= 0 ? cs : -1, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults };
   }
   const definedLabels = labels.filter((l) => l !== undefined && l !== "");
   const allNumeric = definedLabels.length > 0 && definedLabels.every(l => /^\d+$/.test(l));
   const detected = detectSpiChannels(capture.samples, capture.width);
   if ((mosi >= 0 && sck >= 0) || (sck >= 0 && cs >= 0)) {
-    return { tab: "spi", uart: { baud: 115200, ch: uartCh }, i2c: { scl: scl >= 0 ? scl : 1, sda: sda >= 0 ? sda : 2, addrBits: 7 }, spi: { mosi: mosi >= 0 ? mosi : 0, miso: miso >= 0 ? miso : 1, sck: sck >= 0 ? sck : 2, cs: cs >= 0 ? cs : -1, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults };
+    return { tab: "spi", uart: { baud: 115200, ch: uartCh }, i2c: { scl: scl >= 0 ? scl : 1, sda: sda >= 0 ? sda : 2, addrBits: 7 }, spi: { mosi: mosi >= 0 ? mosi : 0, miso: miso >= 0 ? miso : 1, sck: sck >= 0 ? sck : 2, cs: cs >= 0 ? cs : -1, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults };
   }
   if (capture.source === "sigrok-sr" && allNumeric && definedLabels.length <= 4) {
-    return { tab: "spi", uart: { baud: 115200, ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: -1, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults };
+    return { tab: "spi", uart: { baud: 115200, ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: -1, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults };
   }
-  return { tab: "uart", uart: { baud: estimateUartBaud(capture.samples, capture.sampleRate, uartCh), ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults };
+  return { tab: "uart", uart: { baud: estimateUartBaud(capture.samples, capture.sampleRate, uartCh), ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults };
 }
 
 export function estimateUartBaud(samples: Uint8Array, sampleRate: number, ch: number): number {
@@ -181,6 +197,7 @@ export interface AutoDetectResult {
   spi?: { mosi: number; miso: number; sck: number; cs: number; mode: 0 | 1 | 2 | 3; bits: 8 | 16 };
   can?: { ch: number; baud: number };
   onewire?: { ch: number };
+  swd?: { swdio: number; swclk: number };
 }
 
 /**
@@ -217,6 +234,11 @@ export function autoDetectLaProtocol(capture: LaCapture): AutoDetectResult {
     const frames = decodeOneWire(samples, rate, labelDefaults.onewire.ch);
     const resetFrames = frames.filter(f => f.type === "reset" || f.type === "presence").length;
     if (resetFrames > 0) return { tab: "onewire", score: resetFrames, reason: `1-Wire on D${labelDefaults.onewire.ch} (labels)`, onewire: labelDefaults.onewire };
+  }
+  if (labelDefaults.swd) {
+    const frames = decodeSWD(samples, rate, labelDefaults.swd.swdio, labelDefaults.swd.swclk);
+    const resetFrames = frames.filter(f => f.type === "reset").length;
+    if (resetFrames > 0) return { tab: "swd", score: resetFrames, reason: `SWD on D${labelDefaults.swd.swdio}/D${labelDefaults.swd.swclk} (labels)`, swd: labelDefaults.swd };
   }
 
   const active = getActiveChannels(samples, width);
@@ -270,6 +292,19 @@ export function autoDetectLaProtocol(capture: LaCapture): AutoDetectResult {
     const score = frames.filter(f => f.type === "reset" || f.type === "presence").length;
     if (score > best.score) {
       best = { tab: "onewire", score, reason: `1-Wire on D${ch}`, onewire: { ch } };
+    }
+  }
+
+  // SWD: try pairs of active channels as SWDIO/SWCLK.
+  for (let dio = 0; dio < Math.min(width, 16); dio++) {
+    for (let clk = 0; clk < Math.min(width, 16); clk++) {
+      if (dio === clk) continue;
+      if (!active.includes(dio) || !active.includes(clk)) continue;
+      const frames = decodeSWD(samples, rate, dio, clk);
+      const score = frames.filter(f => f.type === "reset").length * 2 + frames.filter(f => f.type === "request").length;
+      if (score > best.score) {
+        best = { tab: "swd", score, reason: `SWD D${dio}/D${clk}`, swd: { swdio: dio, swclk: clk } };
+      }
     }
   }
 
@@ -872,5 +907,168 @@ export function generateOneWireFrame(
     }
   }
   push(1, usToS(100));
+  return Uint8Array.from(out);
+}
+
+// ---------------------------------------------------------------------------
+// SWD decoder
+// ---------------------------------------------------------------------------
+
+const SWD_RESET_MIN_BITS = 50;
+const SWD_SWITCHING_SEQUENCE = 0x79bc; // JTAG-to-SWD selection, 16 bits LSB-first
+
+export function decodeSWD(
+  samples: Uint8Array,
+  sampleRate: number,
+  swdioCh: number,
+  swclkCh: number
+): SWDFrame[] {
+  const frames: SWDFrame[] = [];
+  const bit = (ch: number, s: number) => (samples[Math.max(0, Math.min(samples.length - 1, s))] >> ch) & 1;
+
+  // Extract SWDIO values on every SWCLK rising edge, plus the sample index of each edge.
+  const bits: { v: number; s: number }[] = [];
+  let lastClk = 0;
+  for (let s = 1; s < samples.length; s++) {
+    const clk = bit(swclkCh, s);
+    if (clk === 1 && lastClk === 0) {
+      bits.push({ v: bit(swdioCh, s), s });
+    }
+    lastClk = clk;
+  }
+  if (bits.length === 0) return frames;
+
+  let i = 0;
+  while (i < bits.length) {
+    // Line reset: SWDIO high for >= 50 SWCLK cycles.
+    if (bits[i].v === 1) {
+      let runStart = i;
+      while (i < bits.length && bits[i].v === 1) i++;
+      const runLen = i - runStart;
+      if (runLen >= SWD_RESET_MIN_BITS) {
+        frames.push({
+          startSample: bits[runStart].s,
+          endSample: bits[i - 1].s,
+          ts: bits[runStart].s / sampleRate,
+          type: "reset",
+        });
+        continue;
+      }
+      // Short run of 1s: back up to the first 1 and let normal parsing run.
+      i = runStart;
+    }
+
+    // Switching sequence detection (JTAG-to-SWD: 0x79BC, 16 bits LSB-first).
+    if (i + 16 <= bits.length) {
+      let seq = 0;
+      for (let k = 0; k < 16; k++) seq |= (bits[i + k].v << k);
+      if (seq === SWD_SWITCHING_SEQUENCE) {
+        i += 16;
+        continue; // consume switching sequence silently
+      }
+    }
+
+    // Try to parse a request packet: 8 bits.
+    if (i + 8 <= bits.length) {
+      const start = bits[i].v;
+      const apnDp = bits[i + 1].v as 0 | 1;
+      const read = bits[i + 2].v === 1;
+      const a2 = bits[i + 3].v;
+      const a3 = bits[i + 4].v;
+      const parity = bits[i + 5].v;
+      const stop = bits[i + 6].v;
+      const park = bits[i + 7].v;
+      const readBit = read ? 1 : 0;
+      const computedParity = (apnDp + readBit + a2 + a3) & 1;
+      const ok = start === 1 && stop === 0 && park === 1 && parity === computedParity;
+      if (ok) {
+        const addr = (a2 << 2) | (a3 << 3);
+        const reqStart = bits[i].s;
+        const reqEnd = bits[i + 7].s;
+        frames.push({
+          startSample: reqStart,
+          endSample: reqEnd,
+          ts: reqStart / sampleRate,
+          type: "request",
+          apnDp,
+          read,
+          addr,
+          ok: true,
+        });
+        // Try to capture the following data phase: 32 bits + parity after 1 turnaround bit.
+        const dataStartIdx = i + 8 + 1; // request + turnaround
+        if (dataStartIdx + 32 + 1 <= bits.length) {
+          let data = 0;
+          for (let k = 0; k < 32; k++) data |= (bits[dataStartIdx + k].v << k);
+          data = data >>> 0;
+          const dataParity = bits[dataStartIdx + 32].v;
+          const computedDataParity = ((data >>> 0).toString(2).match(/1/g)?.length ?? 0) & 1;
+          frames.push({
+            startSample: bits[dataStartIdx].s,
+            endSample: bits[dataStartIdx + 32].s,
+            ts: bits[dataStartIdx].s / sampleRate,
+            type: "data",
+            data,
+            ok: dataParity === computedDataParity,
+          });
+          i = dataStartIdx + 32 + 1;
+          continue;
+        }
+        i += 8;
+        continue;
+      }
+    }
+
+    i++;
+  }
+
+  return frames.slice(0, MAX_TICKER);
+}
+
+// Generate a synthetic SWD pattern on the given channels.
+// Drives SWCLK on swclkCh and SWDIO on swdioCh.
+export function generateSwdFrame(
+  sampleRate: number,
+  swdioCh: number,
+  swclkCh: number,
+  requests: { apnDp: 0 | 1; read: boolean; addr: number; data?: number }[]
+): Uint8Array {
+  const halfBit = Math.max(1, Math.floor(sampleRate / 1_000_000)); // 1 µs half-period => 500 kHz SWCLK
+  const out: number[] = [];
+  const clkMask = 1 << swclkCh;
+  const dioMask = 1 << swdioCh;
+  const push = (dio: number, clk: number, n: number) => {
+    for (let i = 0; i < n; i++) out.push((dio ? dioMask : 0) | (clk ? clkMask : 0));
+  };
+  const writeBit = (dio: number) => { push(dio, 0, halfBit); push(dio, 1, halfBit); };
+
+  // Idle low
+  push(0, 0, halfBit * 10);
+  // Line reset: 55 cycles with SWDIO high
+  for (let i = 0; i < 55; i++) writeBit(1);
+  // Switching sequence: 0x79BC LSB-first
+  for (let i = 0; i < 16; i++) writeBit((SWD_SWITCHING_SEQUENCE >> i) & 1);
+  // Idle
+  for (let i = 0; i < 8; i++) writeBit(0);
+
+  for (const req of requests) {
+    const a2 = (req.addr >> 2) & 1;
+    const a3 = (req.addr >> 3) & 1;
+    const readBit = req.read ? 1 : 0;
+    const parity = (req.apnDp + readBit + a2 + a3) & 1;
+    const header = (1 << 0) | (req.apnDp << 1) | (readBit << 2) | (a2 << 3) | (a3 << 4) | (parity << 5) | (0 << 6) | (1 << 7);
+    for (let i = 0; i < 8; i++) writeBit((header >> i) & 1);
+    // Turnaround cycle
+    writeBit(0);
+    // Data phase: 32 bits + parity
+    const data = req.data ?? 0;
+    for (let i = 0; i < 32; i++) writeBit((data >> i) & 1);
+    const dataParity = ((data >>> 0).toString(2).match(/1/g)?.length ?? 0) & 1;
+    writeBit(dataParity);
+    // Turnaround cycle
+    writeBit(0);
+  }
+
+  push(0, 0, halfBit * 10);
   return Uint8Array.from(out);
 }

@@ -6,10 +6,12 @@ import {
   decodeSPI,
   decodeCAN,
   decodeOneWire,
+  decodeSWD,
   generateLaTestPattern,
   makeFakeUartSignal,
   generateCanFrame,
   generateOneWireFrame,
+  generateSwdFrame,
   MAX_TICKER,
   inferDecoderDefaults,
   autoDetectLaProtocol,
@@ -417,7 +419,7 @@ describe("autoDetectLaProtocol", () => {
     const samples = generateLaTestPattern(1_000_000, 1);
     const result = autoDetectLaProtocol(cap(samples, 1_000_000));
     expect(result.score).toBeGreaterThan(0);
-    expect(result.tab).toMatch(/^(uart|i2c|spi|can|onewire)$/);
+    expect(result.tab).toMatch(/^(uart|i2c|spi|can|onewire|swd)$/);
   });
   it("returns a positive score for a CAN signal", () => {
     const samples = generateCanFrame(1_000_000, 500_000, 3, 0x123, [0xDE, 0xAD, 0xBE, 0xEF]);
@@ -432,6 +434,13 @@ describe("autoDetectLaProtocol", () => {
     expect(result.score).toBeGreaterThan(0);
     expect(result.tab).toBe("onewire");
     expect(result.onewire).toBeDefined();
+  });
+  it("returns a positive score for a SWD signal", () => {
+    const samples = generateSwdFrame(1_000_000, 1, 0, [{ apnDp: 0, read: true, addr: 0x0, data: 0x1BA01477 }]);
+    const result = autoDetectLaProtocol({ ...cap(samples, 1_000_000), channelLabels: ["SWCLK", "SWDIO"] });
+    expect(result.score).toBeGreaterThan(0);
+    expect(result.tab).toBe("swd");
+    expect(result.swd).toBeDefined();
   });
 });
 
@@ -497,5 +506,44 @@ describe("decodeOneWire", () => {
     const bytes = frames.filter(f => f.type === "byte");
     expect(bytes).toHaveLength(1);
     expect(bytes[0].value).toBe(0xAA);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// decodeSWD
+// ---------------------------------------------------------------------------
+
+describe("decodeSWD", () => {
+  const RATE = 1_000_000;
+
+  it("detects reset and switching sequence", () => {
+    const samples = generateSwdFrame(RATE, 1, 0, []);
+    const frames = decodeSWD(samples, RATE, 1, 0);
+    expect(frames.some(f => f.type === "reset")).toBe(true);
+  });
+
+  it("decodes a read DP IDR request and data", () => {
+    const samples = generateSwdFrame(RATE, 1, 0, [{ apnDp: 0, read: true, addr: 0x0, data: 0x1BA01477 }]);
+    const frames = decodeSWD(samples, RATE, 1, 0);
+    const req = frames.find(f => f.type === "request");
+    expect(req).toBeDefined();
+    expect(req!.read).toBe(true);
+    expect(req!.apnDp).toBe(0);
+    expect(req!.addr).toBe(0x0);
+    const data = frames.find(f => f.type === "data");
+    expect(data).toBeDefined();
+    expect(data!.data).toBe(0x1BA01477);
+    expect(data!.ok).toBe(true);
+  });
+
+  it("decodes on different channels", () => {
+    const samples = generateSwdFrame(RATE, 7, 3, [{ apnDp: 1, read: false, addr: 0x4, data: 0xDEADBEEF }]);
+    const frames = decodeSWD(samples, RATE, 7, 3);
+    const req = frames.find(f => f.type === "request");
+    expect(req).toBeDefined();
+    expect(req!.apnDp).toBe(1);
+    expect(req!.read).toBe(false);
+    const data = frames.find(f => f.type === "data");
+    expect(data?.data).toBe(0xDEADBEEF);
   });
 });

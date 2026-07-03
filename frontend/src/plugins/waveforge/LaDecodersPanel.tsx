@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
-import { decodeUartChunk, decodeI2C, decodeSPI, decodeCAN, decodeOneWire, autoDetectLaProtocol, MAX_TICKER } from "./laDecoders";
+import { decodeUartChunk, decodeI2C, decodeSPI, decodeCAN, decodeOneWire, decodeSWD, autoDetectLaProtocol, MAX_TICKER } from "./laDecoders";
 import type { DecoderTab, LaCapture, AutoDetectResult } from "./laDecoders";
 import { DEFAULT_BAUDS } from "./laChannelConfig";
 
@@ -8,6 +8,7 @@ interface I2cConfig { scl: number; sda: number; addrBits: 7 | 8; }
 interface SpiConfig { mosi: number; miso: number; sck: number; cs: number; mode: 0 | 1 | 2 | 3; bits: 8 | 16; csActiveLow: boolean; }
 interface CanConfig { ch: number; baud: number; }
 interface OneWireConfig { ch: number; }
+interface SwdConfig { swdio: number; swclk: number; }
 
 interface Props {
   frozenBuf?: Uint8Array | null;
@@ -19,8 +20,9 @@ interface Props {
   defaultSpi?: SpiConfig;
   defaultCan?: CanConfig;
   defaultOneWire?: OneWireConfig;
+  defaultSwd?: SwdConfig;
   suggestedTab?: DecoderTab;
-  onChange?: (state: { tab: DecoderTab; uart: UartConfig; i2c: I2cConfig; spi: SpiConfig; can: CanConfig; onewire: OneWireConfig }) => void;
+  onChange?: (state: { tab: DecoderTab; uart: UartConfig; i2c: I2cConfig; spi: SpiConfig; can: CanConfig; onewire: OneWireConfig; swd: SwdConfig }) => void;
 }
 
 function ascii(b: number) {
@@ -31,7 +33,7 @@ function fmt(ts: number) {
   return ts < 1e-3 ? `${(ts * 1e6).toFixed(0)}µs` : `${(ts * 1e3).toFixed(2)}ms`;
 }
 
-export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defaultUart, defaultI2c, defaultSpi, defaultCan, defaultOneWire, suggestedTab, onChange }: Props) {
+export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defaultUart, defaultI2c, defaultSpi, defaultCan, defaultOneWire, defaultSwd, suggestedTab, onChange }: Props) {
   const effectiveBuf = capture?.samples ?? frozenBuf ?? null;
   const effectiveRate = capture?.sampleRate ?? sampleRate ?? 0;
   const [tab, setTab] = useState<DecoderTab>(suggestedTab ?? "uart");
@@ -40,6 +42,7 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
   const [spi, setSpi] = useState<SpiConfig>(defaultSpi ?? { mosi: 3, miso: 4, sck: 5, cs: 6, mode: 0, bits: 8, csActiveLow: true });
   const [can, setCan] = useState<CanConfig>(defaultCan ?? { ch: 0, baud: 500000 });
   const [onewire, setOneWire] = useState<OneWireConfig>(defaultOneWire ?? { ch: 0 });
+  const [swd, setSwd] = useState<SwdConfig>(defaultSwd ?? { swdio: 1, swclk: 0 });
   const [lastAutoDetect, setLastAutoDetect] = useState<AutoDetectResult | null>(null);
 
   useEffect(() => {
@@ -50,7 +53,8 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
   useEffect(() => { if (defaultSpi) setSpi(defaultSpi); }, [defaultSpi]);
   useEffect(() => { if (defaultCan) setCan(defaultCan); }, [defaultCan]);
   useEffect(() => { if (defaultOneWire) setOneWire(defaultOneWire); }, [defaultOneWire]);
-  useEffect(() => { onChange?.({ tab, uart, i2c, spi, can, onewire }); }, [tab, uart, i2c, spi, can, onewire, onChange]);
+  useEffect(() => { if (defaultSwd) setSwd(defaultSwd); }, [defaultSwd]);
+  useEffect(() => { onChange?.({ tab, uart, i2c, spi, can, onewire, swd }); }, [tab, uart, i2c, spi, can, onewire, swd, onChange]);
 
   const handleAutoDetect = useCallback(() => {
     if (!effectiveBuf || effectiveBuf.length === 0 || effectiveRate <= 0) return;
@@ -63,6 +67,7 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
     if (result.spi) setSpi(s => ({ ...result.spi!, csActiveLow: s.csActiveLow }));
     if (result.can) setCan(result.can);
     if (result.onewire) setOneWire(result.onewire);
+    if (result.swd) setSwd(result.swd);
   }, [effectiveBuf, effectiveRate, capture]);
 
   const uartRows = useMemo(() => {
@@ -90,11 +95,16 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
     return decodeOneWire(effectiveBuf, effectiveRate, onewire.ch).slice(0, MAX_TICKER);
   }, [effectiveBuf, effectiveRate, onewire]);
 
+  const swdRows = useMemo(() => {
+    if (!effectiveBuf || effectiveBuf.length === 0) return [];
+    return decodeSWD(effectiveBuf, effectiveRate, swd.swdio, swd.swclk).slice(0, MAX_TICKER);
+  }, [effectiveBuf, effectiveRate, swd]);
+
   return (
     <div className="flex flex-col h-full min-h-0">
       {/* Tabs */}
       <div className="flex items-center gap-1 px-2 py-1 bg-fob-surface border-b border-fob-border text-xs shrink-0">
-        {(["uart", "i2c", "spi", "can", "onewire"] as DecoderTab[]).map(t => (
+        {(["uart", "i2c", "spi", "can", "onewire", "swd"] as DecoderTab[]).map(t => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -316,6 +326,49 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
                   {r.value !== undefined && r.type === "byte" && (
                     <span className="text-fob-green shrink-0">0x{r.value.toString(16).padStart(2, "0").toUpperCase()}</span>
                   )}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* SWD */}
+      {tab === "swd" && (
+        <div className="flex flex-col flex-1 min-h-0">
+          <div className="flex items-center gap-2 px-2 py-1 bg-fob-surface border-b border-fob-border text-xs shrink-0 flex-wrap">
+            <span className="text-fob-text-dim">DIO:</span>
+            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14"
+              value={swd.swdio} onChange={e => setSwd(c => ({ ...c, swdio: Number(e.target.value) }))}>
+              {Array.from({ length: 16 }, (_, i) => <option key={i} value={i}>D{i}</option>)}
+            </select>
+            <span className="text-fob-text-dim">CLK:</span>
+            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14"
+              value={swd.swclk} onChange={e => setSwd(c => ({ ...c, swclk: Number(e.target.value) }))}>
+              {Array.from({ length: 16 }, (_, i) => <option key={i} value={i}>D{i}</option>)}
+            </select>
+          </div>
+          <div className="flex-1 overflow-y-auto font-mono text-[11px] px-2 py-1 space-y-0">
+            {swdRows.length === 0 ? (
+              <div className="text-fob-text-dim text-center mt-4">
+                {running ? "Stop capture to decode SWD" : "No SWD traffic — check DIO/CLK channels"}
+              </div>
+            ) : (
+              swdRows.map((r, i) => (
+                <div key={i} className="flex gap-3 leading-5 text-fob-text">
+                  <span className="text-fob-text-dim w-16 shrink-0">{fmt(r.ts)}</span>
+                  <span className="text-fob-blue shrink-0">{r.type.toUpperCase()}</span>
+                  {r.type === "request" && (
+                    <>
+                      <span className="text-fob-yellow shrink-0">{r.read ? "R" : "W"}</span>
+                      <span className="text-fob-text-dim shrink-0">{r.apnDp === 1 ? "AP" : "DP"}</span>
+                      <span className="text-fob-green shrink-0">0x{r.addr!.toString(16).toUpperCase()}</span>
+                    </>
+                  )}
+                  {r.type === "data" && r.data !== undefined && (
+                    <span className="text-fob-green shrink-0">0x{r.data.toString(16).padStart(8, "0").toUpperCase()}</span>
+                  )}
+                  {r.ok === false && <span className="text-fob-red">⚠</span>}
                 </div>
               ))
             )}

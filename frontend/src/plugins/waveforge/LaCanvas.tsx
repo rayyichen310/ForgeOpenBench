@@ -1,7 +1,7 @@
 import { useRef, useEffect, useCallback } from "react";
 import type { LaChannel } from "./laChannelConfig";
 import { CHANNEL_COLORS, DEFAULT_LABEL_WIDTH } from "./laChannelConfig";
-import type { DecoderTab, TickerRow, I2CFrame, SPIFrame, CANFrame, OneWireFrame } from "./laDecoders";
+import type { DecoderTab, TickerRow, I2CFrame, SPIFrame, CANFrame, OneWireFrame, SWDFrame } from "./laDecoders";
 
 interface Props {
   samples: Uint8Array;
@@ -16,11 +16,13 @@ interface Props {
   spiRows?: SPIFrame[];
   canRows?: CANFrame[];
   oneWireRows?: OneWireFrame[];
+  swdRows?: SWDFrame[];
   decoderChannel?: number;
   decoderSda?: number;
   decoderMosi?: number;
   decoderCan?: number;
   decoderOneWire?: number;
+  decoderSwd?: { swdio: number; swclk: number };
   showCursors?: boolean;
   cursorA?: number;
   cursorB?: number;
@@ -238,6 +240,17 @@ export function LaCanvas(props: Props) {
           if (r.type === "reset") drawBubble(r.startSample, chIdx, "RST", color);
           else if (r.type === "presence") drawBubble(r.startSample, chIdx, "PRES", color);
           else if (r.type === "byte" && r.value !== undefined) drawBubble(r.startSample, chIdx, `0x${r.value.toString(16).padStart(2, "0").toUpperCase()}`, color);
+        });
+      }
+    }
+    if (props.decoderTab === "swd" && props.swdRows && props.decoderSwd) {
+      const chIdx = visible.findIndex(c => c.id === props.decoderSwd?.swdio);
+      if (chIdx >= 0) {
+        const color = visible[chIdx]?.color || CHANNEL_COLORS[props.decoderSwd.swdio];
+        props.swdRows.forEach(r => {
+          if (r.type === "reset") drawBubble(r.startSample, chIdx, "RST", color);
+          else if (r.type === "request") drawBubble(r.startSample, chIdx, `${r.read ? "R" : "W"}${r.apnDp === 1 ? "AP" : "DP"} 0x${r.addr!.toString(16)}`, color);
+          else if (r.type === "data" && r.data !== undefined) drawBubble(r.startSample, chIdx, `0x${r.data.toString(16).padStart(8, "0").toUpperCase()}`, color);
         });
       }
     }
