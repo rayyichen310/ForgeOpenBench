@@ -57,7 +57,19 @@ export interface SWDFrame {
   ok?: boolean;
 }
 
-export type DecoderTab = "uart" | "i2c" | "spi" | "can" | "onewire" | "swd";
+export interface JTAGFrame {
+  startSample: number;
+  endSample: number;
+  ts: number;
+  type: "state" | "shift" | "reset";
+  state?: string;
+  register?: "DR" | "IR";
+  tdi?: number;
+  tdo?: number;
+  bits?: number;
+}
+
+export type DecoderTab = "uart" | "i2c" | "spi" | "can" | "onewire" | "swd" | "jtag";
 
 export interface LaCapture {
   sampleRate: number;
@@ -76,6 +88,7 @@ export interface DecoderDefaults {
   can: { ch: number; baud: number };
   onewire: { ch: number };
   swd: { swdio: number; swclk: number };
+  jtag: { tck: number; tms: number; tdi: number; tdo: number };
 }
 
 export function inferDecoderDefaults(capture: LaCapture): DecoderDefaults {
@@ -104,19 +117,24 @@ export function inferDecoderDefaults(capture: LaCapture): DecoderDefaults {
   const swdClk = find(["swclk", "swclktdi"]);
   const swdDio = find(["swdio", "swdio TMS"]);
   const swdDefaults = { swclk: swdClk >= 0 ? swdClk : 0, swdio: swdDio >= 0 ? swdDio : 1 };
+  const jtagTck = find(["tck", "jtagtck"]);
+  const jtagTms = find(["tms", "jtagtms"]);
+  const jtagTdi = find(["tdi", "jtagtdi"]);
+  const jtagTdo = find(["tdo", "jtagtdo"]);
+  const jtagDefaults = { tck: jtagTck >= 0 ? jtagTck : 0, tms: jtagTms >= 0 ? jtagTms : 1, tdi: jtagTdi >= 0 ? jtagTdi : 2, tdo: jtagTdo >= 0 ? jtagTdo : 3 };
   if (scl >= 0 && sda >= 0) {
-    return { tab: "i2c", uart: { baud: 115200, ch: uartCh }, i2c: { scl, sda, addrBits: 7 }, spi: { mosi: mosi >= 0 ? mosi : 0, miso: miso >= 0 ? miso : 0, sck: sck >= 0 ? sck : 1, cs: cs >= 0 ? cs : -1, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults };
+    return { tab: "i2c", uart: { baud: 115200, ch: uartCh }, i2c: { scl, sda, addrBits: 7 }, spi: { mosi: mosi >= 0 ? mosi : 0, miso: miso >= 0 ? miso : 0, sck: sck >= 0 ? sck : 1, cs: cs >= 0 ? cs : -1, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults };
   }
   const definedLabels = labels.filter((l) => l !== undefined && l !== "");
   const allNumeric = definedLabels.length > 0 && definedLabels.every(l => /^\d+$/.test(l));
   const detected = detectSpiChannels(capture.samples, capture.width);
   if ((mosi >= 0 && sck >= 0) || (sck >= 0 && cs >= 0)) {
-    return { tab: "spi", uart: { baud: 115200, ch: uartCh }, i2c: { scl: scl >= 0 ? scl : 1, sda: sda >= 0 ? sda : 2, addrBits: 7 }, spi: { mosi: mosi >= 0 ? mosi : 0, miso: miso >= 0 ? miso : 1, sck: sck >= 0 ? sck : 2, cs: cs >= 0 ? cs : -1, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults };
+    return { tab: "spi", uart: { baud: 115200, ch: uartCh }, i2c: { scl: scl >= 0 ? scl : 1, sda: sda >= 0 ? sda : 2, addrBits: 7 }, spi: { mosi: mosi >= 0 ? mosi : 0, miso: miso >= 0 ? miso : 1, sck: sck >= 0 ? sck : 2, cs: cs >= 0 ? cs : -1, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults };
   }
   if (capture.source === "sigrok-sr" && allNumeric && definedLabels.length <= 4) {
-    return { tab: "spi", uart: { baud: 115200, ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: -1, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults };
+    return { tab: "spi", uart: { baud: 115200, ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: -1, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults };
   }
-  return { tab: "uart", uart: { baud: estimateUartBaud(capture.samples, capture.sampleRate, uartCh), ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults };
+  return { tab: "uart", uart: { baud: estimateUartBaud(capture.samples, capture.sampleRate, uartCh), ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults };
 }
 
 export function estimateUartBaud(samples: Uint8Array, sampleRate: number, ch: number): number {
@@ -198,6 +216,7 @@ export interface AutoDetectResult {
   can?: { ch: number; baud: number };
   onewire?: { ch: number };
   swd?: { swdio: number; swclk: number };
+  jtag?: { tck: number; tms: number; tdi: number; tdo: number };
 }
 
 /**
@@ -239,6 +258,11 @@ export function autoDetectLaProtocol(capture: LaCapture): AutoDetectResult {
     const frames = decodeSWD(samples, rate, labelDefaults.swd.swdio, labelDefaults.swd.swclk);
     const resetFrames = frames.filter(f => f.type === "reset").length;
     if (resetFrames > 0) return { tab: "swd", score: resetFrames, reason: `SWD on D${labelDefaults.swd.swdio}/D${labelDefaults.swd.swclk} (labels)`, swd: labelDefaults.swd };
+  }
+  if (labelDefaults.jtag) {
+    const frames = decodeJTAG(samples, rate, labelDefaults.jtag.tck, labelDefaults.jtag.tms, labelDefaults.jtag.tdi, labelDefaults.jtag.tdo);
+    const stateFrames = frames.filter(f => f.type === "state" || f.type === "shift").length;
+    if (stateFrames > 0) return { tab: "jtag", score: stateFrames, reason: `JTAG on D${labelDefaults.jtag.tck}/D${labelDefaults.jtag.tms}/D${labelDefaults.jtag.tdi}/D${labelDefaults.jtag.tdo} (labels)`, jtag: labelDefaults.jtag };
   }
 
   const active = getActiveChannels(samples, width);
@@ -304,6 +328,24 @@ export function autoDetectLaProtocol(capture: LaCapture): AutoDetectResult {
       const score = frames.filter(f => f.type === "reset").length * 2 + frames.filter(f => f.type === "request").length;
       if (score > best.score) {
         best = { tab: "swd", score, reason: `SWD D${dio}/D${clk}`, swd: { swdio: dio, swclk: clk } };
+      }
+    }
+  }
+
+  // JTAG: try quadruples of active channels as TCK/TMS/TDI/TDO.
+  for (const tck of active) {
+    for (const tms of active) {
+      if (tms === tck) continue;
+      for (const tdi of active) {
+        if (tdi === tck || tdi === tms) continue;
+        for (const tdo of active) {
+          if (tdo === tck || tdo === tms || tdo === tdi) continue;
+          const frames = decodeJTAG(samples, rate, tck, tms, tdi, tdo);
+          const score = frames.filter(f => f.type === "shift").length * 2 + frames.filter(f => f.type === "state").length;
+          if (score > best.score) {
+            best = { tab: "jtag", score, reason: `JTAG D${tck}/D${tms}/D${tdi}/D${tdo}`, jtag: { tck, tms, tdi, tdo } };
+          }
+        }
       }
     }
   }
@@ -1070,5 +1112,194 @@ export function generateSwdFrame(
   }
 
   push(0, 0, halfBit * 10);
+  return Uint8Array.from(out);
+}
+
+// ---------------------------------------------------------------------------
+// JTAG decoder
+// ---------------------------------------------------------------------------
+
+const JTAG_STATES: Record<string, Record<string, string>> = {
+  "Test-Logic-Reset": { "0": "Run-Test/Idle", "1": "Test-Logic-Reset" },
+  "Run-Test/Idle": { "0": "Run-Test/Idle", "1": "Select-DR-Scan" },
+  "Select-DR-Scan": { "0": "Capture-DR", "1": "Select-IR-Scan" },
+  "Capture-DR": { "0": "Shift-DR", "1": "Exit1-DR" },
+  "Shift-DR": { "0": "Shift-DR", "1": "Exit1-DR" },
+  "Exit1-DR": { "0": "Pause-DR", "1": "Update-DR" },
+  "Pause-DR": { "0": "Pause-DR", "1": "Exit2-DR" },
+  "Exit2-DR": { "0": "Shift-DR", "1": "Update-DR" },
+  "Update-DR": { "0": "Run-Test/Idle", "1": "Select-DR-Scan" },
+  "Select-IR-Scan": { "0": "Capture-IR", "1": "Test-Logic-Reset" },
+  "Capture-IR": { "0": "Shift-IR", "1": "Exit1-IR" },
+  "Shift-IR": { "0": "Shift-IR", "1": "Exit1-IR" },
+  "Exit1-IR": { "0": "Pause-IR", "1": "Update-IR" },
+  "Pause-IR": { "0": "Pause-IR", "1": "Exit2-IR" },
+  "Exit2-IR": { "0": "Shift-IR", "1": "Update-IR" },
+  "Update-IR": { "0": "Run-Test/Idle", "1": "Select-DR-Scan" },
+};
+
+export function decodeJTAG(
+  samples: Uint8Array,
+  sampleRate: number,
+  tckCh: number,
+  tmsCh: number,
+  tdiCh: number,
+  tdoCh: number
+): JTAGFrame[] {
+  const frames: JTAGFrame[] = [];
+  const bit = (ch: number, s: number) => (samples[Math.max(0, Math.min(samples.length - 1, s))] >> ch) & 1;
+
+  // Extract TMS/TDI/TDO values on every TCK rising edge.
+  const edges: { tms: number; tdi: number; tdo: number; s: number }[] = [];
+  let lastTck = 0;
+  for (let s = 1; s < samples.length; s++) {
+    const tck = bit(tckCh, s);
+    if (tck === 1 && lastTck === 0) {
+      edges.push({ tms: bit(tmsCh, s), tdi: bit(tdiCh, s), tdo: bit(tdoCh, s), s });
+    }
+    lastTck = tck;
+  }
+  if (edges.length === 0) return frames;
+
+  let state = "Test-Logic-Reset";
+  // Count initial TMS=1 cycles to confirm reset; emit reset frame once we leave reset.
+  let resetStart = 0;
+  let resetBits = 0;
+  let inReset = true;
+  let shiftStart = 0;
+  let shiftTdi = 0;
+  let shiftTdo = 0;
+  let shiftBits = 0;
+  let shiftRegister: "DR" | "IR" | null = null;
+
+  for (let i = 0; i < edges.length; i++) {
+    const e = edges[i];
+    const nextState = JTAG_STATES[state]?.[String(e.tms)] ?? state;
+
+    if (inReset) {
+      if (e.tms === 1) {
+        resetBits++;
+        continue;
+      }
+      if (resetBits >= 5) {
+        frames.push({ startSample: resetStart, endSample: e.s, ts: resetStart / sampleRate, type: "reset" });
+      }
+      inReset = false;
+      state = nextState;
+      // Emit the transition from reset to Run-Test/Idle.
+      frames.push({ startSample: e.s, endSample: e.s, ts: e.s / sampleRate, type: "state", state: nextState });
+      continue;
+    }
+
+    if (state !== nextState) {
+      // Emit state transition frame.
+      frames.push({ startSample: e.s, endSample: e.s, ts: e.s / sampleRate, type: "state", state: nextState });
+
+      // If entering a shift state, start collecting.
+      if (nextState === "Shift-DR" || nextState === "Shift-IR") {
+        shiftRegister = nextState === "Shift-DR" ? "DR" : "IR";
+        shiftStart = e.s;
+        shiftBits = 0;
+        shiftTdi = 0;
+        shiftTdo = 0;
+      }
+    }
+
+    // Capture bit on any edge belonging to a shift (entry, intermediate, and exit edges).
+    if (shiftRegister && (state.startsWith("Shift-") || nextState.startsWith("Shift-"))) {
+      shiftTdi |= (e.tdi << shiftBits);
+      shiftTdo |= (e.tdo << shiftBits);
+      shiftBits++;
+    }
+
+    // If leaving a shift state, emit the captured shift data now that the exit bit is included.
+    if (shiftRegister && !nextState.startsWith("Shift-")) {
+      if (shiftBits > 0) {
+        const mask = shiftBits >= 32 ? 0xffffffff : (1 << shiftBits) - 1;
+        frames.push({
+          startSample: shiftStart,
+          endSample: e.s,
+          ts: shiftStart / sampleRate,
+          type: "shift",
+          register: shiftRegister,
+          tdi: shiftTdi & mask,
+          tdo: shiftTdo & mask,
+          bits: shiftBits,
+        });
+      }
+      shiftRegister = null;
+      shiftBits = 0;
+      shiftTdi = 0;
+      shiftTdo = 0;
+    }
+
+    state = nextState;
+  }
+
+  // If we ended mid-shift, emit remaining data.
+  if (shiftRegister && shiftBits > 0) {
+    const last = edges[edges.length - 1];
+    frames.push({
+      startSample: shiftStart,
+      endSample: last.s,
+      ts: shiftStart / sampleRate,
+      type: "shift",
+      register: shiftRegister,
+      tdi: shiftTdi,
+      tdo: shiftTdo,
+      bits: shiftBits,
+    });
+  }
+
+  return frames.slice(0, MAX_TICKER);
+}
+
+// Generate a synthetic JTAG pattern on the given channels.
+// Drives TCK on tckCh, TMS on tmsCh, TDI on tdiCh, and TDO on tdoCh.
+export function generateJtagFrame(
+  sampleRate: number,
+  tckCh: number,
+  tmsCh: number,
+  tdiCh: number,
+  tdoCh: number,
+  scans: { register: "DR" | "IR"; tdi: number; tdo: number; bits: number }[]
+): Uint8Array {
+  const halfBit = Math.max(1, Math.floor(sampleRate / 1_000_000)); // 1 µs half-period => 1 MHz TCK
+  const out: number[] = [];
+  const tckMask = 1 << tckCh;
+  const tmsMask = 1 << tmsCh;
+  const tdiMask = 1 << tdiCh;
+  const tdoMask = 1 << tdoCh;
+  const push = (tms: number, tdi: number, tdo: number, tck: number, n: number) => {
+    for (let i = 0; i < n; i++) out.push((tms ? tmsMask : 0) | (tdi ? tdiMask : 0) | (tdo ? tdoMask : 0) | (tck ? tckMask : 0));
+  };
+  const cycle = (tms: number, tdi: number, tdo: number) => { push(tms, tdi, tdo, 0, halfBit); push(tms, tdi, tdo, 1, halfBit); };
+
+  // Reset: 5 TMS=1 cycles, then Run-Test/Idle
+  for (let i = 0; i < 5; i++) cycle(1, 0, 0);
+  cycle(0, 0, 0); // Run-Test/Idle
+
+  for (const scan of scans) {
+    // Select scan path: Run-Test/Idle -> Select-DR/IR -> Capture -> Shift
+    if (scan.register === "DR") {
+      cycle(1, 0, 0); // Select-DR-Scan
+    } else {
+      cycle(1, 0, 0); // Select-DR-Scan
+      cycle(1, 0, 0); // Select-IR-Scan
+    }
+    cycle(0, 0, 0); // Capture
+    // Shift data bits
+    for (let i = 0; i < scan.bits; i++) {
+      const tdi = (scan.tdi >> i) & 1;
+      const tdo = (scan.tdo >> i) & 1;
+      const tms = i === scan.bits - 1 ? 1 : 0; // last bit exits shift
+      cycle(tms, tdi, tdo);
+    }
+    // Exit1 -> Update -> Run-Test/Idle
+    cycle(1, 0, 0); // Exit1
+    cycle(0, 0, 0); // Update-DR/IR -> Run-Test/Idle
+  }
+
+  cycle(0, 0, 0); // stay in Run-Test/Idle
   return Uint8Array.from(out);
 }

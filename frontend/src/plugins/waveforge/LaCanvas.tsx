@@ -1,7 +1,7 @@
 import { useRef, useEffect, useCallback } from "react";
 import type { LaChannel } from "./laChannelConfig";
 import { CHANNEL_COLORS, DEFAULT_LABEL_WIDTH } from "./laChannelConfig";
-import type { DecoderTab, TickerRow, I2CFrame, SPIFrame, CANFrame, OneWireFrame, SWDFrame } from "./laDecoders";
+import type { DecoderTab, TickerRow, I2CFrame, SPIFrame, CANFrame, OneWireFrame, SWDFrame, JTAGFrame } from "./laDecoders";
 
 interface Props {
   samples: Uint8Array;
@@ -17,12 +17,14 @@ interface Props {
   canRows?: CANFrame[];
   oneWireRows?: OneWireFrame[];
   swdRows?: SWDFrame[];
+  jtagRows?: JTAGFrame[];
   decoderChannel?: number;
   decoderSda?: number;
   decoderMosi?: number;
   decoderCan?: number;
   decoderOneWire?: number;
   decoderSwd?: { swdio: number; swclk: number };
+  decoderJtag?: { tck: number; tms: number; tdi: number; tdo: number };
   showCursors?: boolean;
   cursorA?: number;
   cursorB?: number;
@@ -251,6 +253,17 @@ export function LaCanvas(props: Props) {
           if (r.type === "reset") drawBubble(r.startSample, chIdx, "RST", color);
           else if (r.type === "request") drawBubble(r.startSample, chIdx, `${r.read ? "R" : "W"}${r.apnDp === 1 ? "AP" : "DP"} 0x${r.addr!.toString(16)}`, color);
           else if (r.type === "data" && r.data !== undefined) drawBubble(r.startSample, chIdx, `0x${r.data.toString(16).padStart(8, "0").toUpperCase()}`, color);
+        });
+      }
+    }
+    if (props.decoderTab === "jtag" && props.jtagRows && props.decoderJtag) {
+      const tmsChIdx = visible.findIndex(c => c.id === props.decoderJtag?.tms);
+      if (tmsChIdx >= 0) {
+        const color = visible[tmsChIdx]?.color || CHANNEL_COLORS[props.decoderJtag.tms];
+        props.jtagRows.forEach(r => {
+          if (r.type === "reset") drawBubble(r.startSample, tmsChIdx, "RST", color);
+          else if (r.type === "state") drawBubble(r.startSample, tmsChIdx, r.state ?? "", color);
+          else if (r.type === "shift" && r.tdi !== undefined) drawBubble(r.startSample, tmsChIdx, `${r.register} 0x${r.tdi.toString(16).padStart(Math.ceil((r.bits ?? 1) / 4), "0").toUpperCase()}`, color);
         });
       }
     }

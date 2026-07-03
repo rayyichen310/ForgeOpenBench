@@ -13,7 +13,7 @@ import type { LaChannel } from "./laChannelConfig";
 import type { LaAcquireMode } from "./laAcquireModes";
 import type { LaTriggerConfig } from "./laAcquireModes";
 import type { LaCapture, DecoderDefaults } from "./laDecoders";
-import { inferDecoderDefaults, generateLaTestPattern, decodeUartChunk, decodeI2C, decodeSPI, decodeCAN, decodeOneWire, decodeSWD } from "./laDecoders";
+import { inferDecoderDefaults, generateLaTestPattern, decodeUartChunk, decodeI2C, decodeSPI, decodeCAN, decodeOneWire, decodeSWD, decodeJTAG } from "./laDecoders";
 import { parseLaCsv, parseLaJson, detectLaFormat, parseSigrokSr } from "./laImport";
 import { downloadLaCapture } from "./laExport";
 
@@ -56,9 +56,10 @@ export function WaveformLaView(props: Props) {
     can: decoderDefaults.can,
     onewire: decoderDefaults.onewire,
     swd: decoderDefaults.swd,
+    jtag: decoderDefaults.jtag,
   });
   useEffect(() => {
-    setDecoderState({ tab: decoderDefaults.tab, uart: decoderDefaults.uart, i2c: decoderDefaults.i2c, spi: decoderDefaults.spi, can: decoderDefaults.can, onewire: decoderDefaults.onewire, swd: decoderDefaults.swd });
+    setDecoderState({ tab: decoderDefaults.tab, uart: decoderDefaults.uart, i2c: decoderDefaults.i2c, spi: decoderDefaults.spi, can: decoderDefaults.can, onewire: decoderDefaults.onewire, swd: decoderDefaults.swd, jtag: decoderDefaults.jtag });
   }, [decoderDefaults]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -97,6 +98,10 @@ export function WaveformLaView(props: Props) {
   const swdRows = useMemo(() => {
     if (!capture || decoderState.tab !== "swd" || !decoderState.swd) return [];
     return decodeSWD(capture.samples, capture.sampleRate, decoderState.swd.swdio, decoderState.swd.swclk);
+  }, [capture, decoderState]);
+  const jtagRows = useMemo(() => {
+    if (!capture || decoderState.tab !== "jtag" || !decoderState.jtag) return [];
+    return decodeJTAG(capture.samples, capture.sampleRate, decoderState.jtag.tck, decoderState.jtag.tms, decoderState.jtag.tdi, decoderState.jtag.tdo);
   }, [capture, decoderState]);
 
   const totalSamples = useMemo(() => Math.floor((capture?.samples.length ?? 0) / ((capture?.width ?? 8) === 16 ? 2 : 1)), [capture]);
@@ -272,12 +277,14 @@ export function WaveformLaView(props: Props) {
                 canRows={canRows}
                 oneWireRows={oneWireRows}
                 swdRows={swdRows}
+                jtagRows={jtagRows}
                 decoderChannel={decoderState.uart?.ch}
                 decoderSda={decoderState.i2c?.sda}
                 decoderMosi={decoderState.spi?.mosi}
                 decoderCan={decoderState.can?.ch}
                 decoderOneWire={decoderState.onewire?.ch}
                 decoderSwd={decoderState.swd}
+                decoderJtag={decoderState.jtag}
                 showCursors={showCursors}
                 cursorA={cursorA.sample}
                 cursorB={cursorB.sample}
@@ -303,6 +310,7 @@ export function WaveformLaView(props: Props) {
               defaultCan={decoderDefaults.can}
               defaultOneWire={decoderDefaults.onewire}
               defaultSwd={decoderDefaults.swd}
+              defaultJtag={decoderDefaults.jtag}
               onChange={setDecoderState}
             />
           </div>

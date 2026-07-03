@@ -7,11 +7,13 @@ import {
   decodeCAN,
   decodeOneWire,
   decodeSWD,
+  decodeJTAG,
   generateLaTestPattern,
   makeFakeUartSignal,
   generateCanFrame,
   generateOneWireFrame,
   generateSwdFrame,
+  generateJtagFrame,
   MAX_TICKER,
   inferDecoderDefaults,
   autoDetectLaProtocol,
@@ -419,7 +421,7 @@ describe("autoDetectLaProtocol", () => {
     const samples = generateLaTestPattern(1_000_000, 1);
     const result = autoDetectLaProtocol(cap(samples, 1_000_000));
     expect(result.score).toBeGreaterThan(0);
-    expect(result.tab).toMatch(/^(uart|i2c|spi|can|onewire|swd)$/);
+    expect(result.tab).toMatch(/^(uart|i2c|spi|can|onewire|swd|jtag)$/);
   });
   it("returns a positive score for a CAN signal", () => {
     const samples = generateCanFrame(1_000_000, 500_000, 3, 0x123, [0xDE, 0xAD, 0xBE, 0xEF]);
@@ -441,6 +443,13 @@ describe("autoDetectLaProtocol", () => {
     expect(result.score).toBeGreaterThan(0);
     expect(result.tab).toBe("swd");
     expect(result.swd).toBeDefined();
+  });
+  it("returns a positive score for a JTAG signal", () => {
+    const samples = generateJtagFrame(1_000_000, 0, 1, 2, 3, [{ register: "DR", tdi: 0xA5, tdo: 0x12, bits: 8 }]);
+    const result = autoDetectLaProtocol({ ...cap(samples, 1_000_000), channelLabels: ["TCK", "TMS", "TDI", "TDO"] });
+    expect(result.score).toBeGreaterThan(0);
+    expect(result.tab).toBe("jtag");
+    expect(result.jtag).toBeDefined();
   });
 });
 
@@ -545,5 +554,46 @@ describe("decodeSWD", () => {
     expect(req!.read).toBe(false);
     const data = frames.find(f => f.type === "data");
     expect(data?.data).toBe(0xDEADBEEF);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// decodeJTAG
+// ---------------------------------------------------------------------------
+
+describe("decodeJTAG", () => {
+  const RATE = 1_000_000;
+
+  it("detects reset and run-test/idle", () => {
+    const samples = generateJtagFrame(RATE, 0, 1, 2, 3, []);
+    const frames = decodeJTAG(samples, RATE, 0, 1, 2, 3);
+    expect(frames.some(f => f.type === "reset")).toBe(true);
+    expect(frames.some(f => f.type === "state" && f.state === "Run-Test/Idle")).toBe(true);
+  });
+
+  it("decodes a DR scan with TDI and TDO data", () => {
+    const samples = generateJtagFrame(RATE, 0, 1, 2, 3, [{ register: "DR", tdi: 0xA5, tdo: 0x12, bits: 8 }]);
+    const frames = decodeJTAG(samples, RATE, 0, 1, 2, 3);
+    const shift = frames.find(f => f.type === "shift");
+    expect(shift).toBeDefined();
+    expect(shift!.register).toBe("DR");
+    expect(shift!.tdi).toBe(0xA5);
+    expect(shift!.tdo).toBe(0x12);
+    expect(shift!.bits).toBe(8);
+  });
+
+  it("decodes an IR scan and multiple DR scans", () => {
+    const samples = generateJtagFrame(RATE, 0, 1, 2, 3, [
+      { register: "IR", tdi: 0x5, tdo: 0x0, bits: 4 },
+      { register: "DR", tdi: 0x1234, tdo: 0x4321, bits: 16 },
+    ]);
+    const frames = decodeJTAG(samples, RATE, 0, 1, 2, 3);
+    const shifts = frames.filter(f => f.type === "shift");
+    expect(shifts).toHaveLength(2);
+    expect(shifts[0].register).toBe("IR");
+    expect(shifts[0].tdi).toBe(0x5);
+    expect(shifts[1].register).toBe("DR");
+    expect(shifts[1].tdi).toBe(0x1234);
+    expect(shifts[1].tdo).toBe(0x4321);
   });
 });
