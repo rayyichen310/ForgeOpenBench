@@ -12,7 +12,7 @@ import type { LaChannel } from "./laChannelConfig";
 import type { LaAcquireMode } from "./laAcquireModes";
 import type { LaTriggerConfig } from "./laAcquireModes";
 import type { LaCapture } from "./laDecoders";
-import { parseLaCsv, parseLaJson, detectLaFormat } from "./laImport";
+import { parseLaCsv, parseLaJson, detectLaFormat, parseSigrokSr } from "./laImport";
 import { downloadLaCapture } from "./laExport";
 
 interface Props {
@@ -58,13 +58,15 @@ export function WaveformLaView(props: Props) {
   const handleImport = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const text = await file.text();
     const format = detectLaFormat(file.name, file.type);
     let loaded: LaCapture;
-    if (format === "fob-json") {
-      loaded = parseLaJson(text);
+    if (format === "sigrok-sr") {
+      const buf = await file.arrayBuffer();
+      loaded = await parseSigrokSr(buf);
+    } else if (format === "fob-json") {
+      loaded = parseLaJson(await file.text());
     } else {
-      loaded = parseLaCsv(text); // default CSV importer for .csv and unknown text
+      loaded = parseLaCsv(await file.text()); // default CSV importer for .csv and unknown text
     }
     setCapture(loaded);
     setSampleRate(loaded.sampleRate);
