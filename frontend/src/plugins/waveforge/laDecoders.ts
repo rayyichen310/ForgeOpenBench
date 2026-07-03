@@ -131,6 +131,95 @@ export function detectSpiChannels(samples: Uint8Array, width: number): { sck: nu
   return { sck, mosi, miso, cs };
 }
 
+export function getActiveChannels(samples: Uint8Array, width: number): number[] {
+  const maxCh = Math.min(width, 16);
+  const active = new Set<number>();
+  const last = new Int8Array(maxCh).fill(-1);
+  for (let s = 0; s < samples.length; s++) {
+    const byte = samples[s]!;
+    for (let ch = 0; ch < maxCh; ch++) {
+      const v = (byte >> ch) & 1;
+      if (last[ch] !== -1 && v !== last[ch]) active.add(ch);
+      last[ch] = v;
+    }
+  }
+  return Array.from(active).sort((a, b) => a - b);
+}
+
+export interface AutoDetectResult {
+  tab: DecoderTab;
+  score: number;
+  reason: string;
+  uart?: { baud: number; ch: number };
+  i2c?: { scl: number; sda: number; addrBits: 7 | 8 };
+  spi?: { mosi: number; miso: number; sck: number; cs: number; mode: 0 | 1 | 2 | 3; bits: 8 | 16 };
+}
+
+/**
+ * Auto-detect the most likely protocol in a capture.
+ * Scores each candidate by the number of valid decoded frames/rows.
+ * Returns the best match and its configuration.
+ */
+export function autoDetectLaProtocol(capture: LaCapture): AutoDetectResult {
+  const samples = capture.samples;
+  const rate = capture.sampleRate;
+  const width = capture.width;
+
+  // If the capture has explicit probe labels, use label-based inference first.
+  const labelDefaults = inferDecoderDefaults(capture);
+  if (labelDefaults.tab === "i2c" && labelDefaults.i2c) {
+    const frames = decodeI2C(samples, rate, labelDefaults.i2c.scl, labelDefaults.i2c.sda);
+    const score = frames.filter(f => f.type === "start" || f.type === "stop").length * 2 + frames.filter(f => f.type === "byte").length;
+    if (score > 0) return { tab: "i2c", score, reason: `I2C on D${labelDefaults.i2c.scl}/D${labelDefaults.i2c.sda} (labels)`, i2c: labelDefaults.i2c };
+  }
+  if (labelDefaults.tab === "spi" && labelDefaults.spi) {
+    const frames = decodeSPI(samples, rate, labelDefaults.spi.mosi, labelDefaults.spi.miso, labelDefaults.spi.sck, labelDefaults.spi.cs, labelDefaults.spi.mode, labelDefaults.spi.bits, labelDefaults.spi.csActiveLow);
+    if (frames.length > 0) return { tab: "spi", score: frames.length, reason: `SPI mode ${labelDefaults.spi.mode} on D${labelDefaults.spi.mosi}/D${labelDefaults.spi.sck} (labels)`, spi: labelDefaults.spi };
+  }
+  if (labelDefaults.tab === "uart" && labelDefaults.uart) {
+    const rows = decodeUartChunk(samples, rate, labelDefaults.uart.baud, labelDefaults.uart.ch);
+    const valid = rows.filter(r => !r.error).length;
+    if (valid > 0) return { tab: "uart", score: valid, reason: `UART ${labelDefaults.uart.baud.toLocaleString()} baud on D${labelDefaults.uart.ch} (labels)`, uart: labelDefaults.uart };
+  }
+
+  const active = getActiveChannels(samples, width);
+  let best: AutoDetectResult = { tab: "uart", score: 0, reason: "no active signal detected" };
+
+  // UART: try each active channel as TX.
+  for (const ch of active) {
+    const baud = estimateUartBaud(samples, rate, ch);
+    const rows = decodeUartChunk(samples, rate, baud, ch);
+    const valid = rows.filter(r => !r.error).length;
+    if (valid > best.score) {
+      best = { tab: "uart", score: valid, reason: `UART ${baud.toLocaleString()} baud on D${ch}`, uart: { baud, ch } };
+    }
+  }
+
+  // I2C: try each pair of active channels as SCL/SDA.
+  for (let i = 0; i < active.length; i++) {
+    for (let j = i + 1; j < active.length; j++) {
+      const scl = active[i]!;
+      const sda = active[j]!;
+      const frames = decodeI2C(samples, rate, scl, sda);
+      const score = frames.filter(f => f.type === "start" || f.type === "stop").length * 2 + frames.filter(f => f.type === "byte").length;
+      if (score > best.score) {
+        best = { tab: "i2c", score, reason: `I2C on D${scl}/D${sda}`, i2c: { scl, sda, addrBits: 7 } };
+      }
+    }
+  }
+
+  // SPI: detect clock/data channels, then try all 4 modes.
+  const detected = detectSpiChannels(samples, width);
+  for (const mode of [0, 1, 2, 3] as const) {
+    const frames = decodeSPI(samples, rate, detected.mosi, detected.miso, detected.sck, -1, mode, 8, true);
+    if (frames.length > best.score) {
+      best = { tab: "spi", score: frames.length, reason: `SPI mode ${mode} on D${detected.mosi}/D${detected.sck}`, spi: { ...detected, mode, bits: 8, cs: -1 } };
+    }
+  }
+
+  return best;
+}
+
 export function decodeUartChunk(
   samples: Uint8Array,
   sampleRate: number,

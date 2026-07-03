@@ -3,7 +3,7 @@ import { readFile } from "fs/promises";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { parseSigrokSr } from "./sigrokSrParser";
-import { decodeUartChunk, decodeI2C, decodeSPI, inferDecoderDefaults } from "./laDecoders";
+import { decodeUartChunk, decodeI2C, decodeSPI, inferDecoderDefaults, autoDetectLaProtocol } from "./laDecoders";
 
 const FIXTURE_DIR = join(dirname(fileURLToPath(import.meta.url)), "test-fixtures", "sigrok");
 
@@ -51,5 +51,23 @@ describe("sigrok-dumps fixtures", () => {
     // No CS line in this fixture.
     const frames = decodeSPI(cap.samples, cap.sampleRate, cfg.spi.mosi, cfg.spi.miso, cfg.spi.sck, -1, 0, 8, true);
     expect(frames.length).toBeGreaterThan(0);
+  });
+
+  it("auto-detects UART, I2C, and SPI fixtures", async () => {
+    const uartCap = await parseSigrokSr(await loadFixture("hello_world_8n1_9600.sr"));
+    const uartResult = autoDetectLaProtocol(uartCap);
+    expect(uartResult.tab).toBe("uart");
+    expect(uartResult.uart?.ch).toBe(0);
+
+    const i2cCap = await parseSigrokSr(await loadFixture("i2c-sht21-100khz-read-serial-hold.sr"));
+    const i2cResult = autoDetectLaProtocol(i2cCap);
+    expect(i2cResult.tab).toBe("i2c");
+    expect(i2cResult.i2c?.scl).toBe(6);
+    expect(i2cResult.i2c?.sda).toBe(7);
+
+    const spiCap = await parseSigrokSr(await loadFixture("spi-count-lsb.sr"));
+    const spiResult = autoDetectLaProtocol(spiCap);
+    expect(spiResult.tab).toBe("spi");
+    expect(spiResult.spi?.sck).toBe(0);
   });
 });

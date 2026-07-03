@@ -1,6 +1,6 @@
-import { useState, useMemo, useEffect } from "react";
-import { decodeUartChunk, decodeI2C, decodeSPI, MAX_TICKER } from "./laDecoders";
-import type { DecoderTab, LaCapture } from "./laDecoders";
+import { useState, useMemo, useEffect, useCallback } from "react";
+import { decodeUartChunk, decodeI2C, decodeSPI, autoDetectLaProtocol, MAX_TICKER } from "./laDecoders";
+import type { DecoderTab, LaCapture, AutoDetectResult } from "./laDecoders";
 import { DEFAULT_BAUDS } from "./laChannelConfig";
 
 interface UartConfig { baud: number; ch: number; }
@@ -33,6 +33,7 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
   const [uart, setUart] = useState<UartConfig>(defaultUart ?? { baud: 115200, ch: 0 });
   const [i2c, setI2c] = useState<I2cConfig>(defaultI2c ?? { scl: 1, sda: 2, addrBits: 7 });
   const [spi, setSpi] = useState<SpiConfig>(defaultSpi ?? { mosi: 3, miso: 4, sck: 5, cs: 6, mode: 0, bits: 8, csActiveLow: true });
+  const [lastAutoDetect, setLastAutoDetect] = useState<AutoDetectResult | null>(null);
 
   useEffect(() => {
     if (suggestedTab) setTab(suggestedTab);
@@ -40,6 +41,17 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
   useEffect(() => { if (defaultUart) setUart(defaultUart); }, [defaultUart]);
   useEffect(() => { if (defaultI2c) setI2c(defaultI2c); }, [defaultI2c]);
   useEffect(() => { if (defaultSpi) setSpi(defaultSpi); }, [defaultSpi]);
+
+  const handleAutoDetect = useCallback(() => {
+    if (!effectiveBuf || effectiveBuf.length === 0 || effectiveRate <= 0) return;
+    const cap = capture ?? { samples: effectiveBuf, sampleRate: effectiveRate, width: 8, source: "live", importedAt: new Date().toISOString() };
+    const result = autoDetectLaProtocol(cap);
+    setLastAutoDetect(result);
+    setTab(result.tab);
+    if (result.uart) setUart(result.uart);
+    if (result.i2c) setI2c(result.i2c);
+    if (result.spi) setSpi(s => ({ ...result.spi!, csActiveLow: s.csActiveLow }));
+  }, [effectiveBuf, effectiveRate, capture]);
 
   const uartRows = useMemo(() => {
     if (!effectiveBuf || effectiveBuf.length === 0) return [];
@@ -69,7 +81,21 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
             {t}
           </button>
         ))}
+        <div className="flex-1" />
+        <button
+          onClick={handleAutoDetect}
+          disabled={!effectiveBuf || effectiveBuf.length === 0 || effectiveRate <= 0}
+          className="px-2 py-0.5 rounded bg-fob-blue text-fob-accent-text hover:bg-fob-blue/80 disabled:bg-fob-surface disabled:text-fob-text-dim"
+          title="Auto-detect protocol, channels, and baud"
+        >
+          Auto
+        </button>
       </div>
+      {lastAutoDetect && (
+        <div className="px-2 py-0.5 text-[10px] text-fob-text-dim border-b border-fob-border bg-fob-surface shrink-0">
+          Auto-detect: {lastAutoDetect.reason} (score {lastAutoDetect.score})
+        </div>
+      )}
 
       {/* UART */}
       {tab === "uart" && (
