@@ -61,15 +61,75 @@ export function inferDecoderDefaults(capture: LaCapture): DecoderDefaults {
   const sck = find(["sck", "clk", "spiclk"]);
   const cs = find(["cs", "ss", "nss"]);
 
+  const uartCh = tx >= 0 ? tx : 0;
   if (scl >= 0 && sda >= 0) {
-    return { tab: "i2c", uart: { baud: 115200, ch: tx >= 0 ? tx : 0 }, i2c: { scl, sda, addrBits: 7 }, spi: { mosi: mosi >= 0 ? mosi : 0, miso: miso >= 0 ? miso : 0, sck: sck >= 0 ? sck : 1, cs: cs >= 0 ? cs : -1, mode: 0, bits: 8, csActiveLow: true } };
+    return { tab: "i2c", uart: { baud: 115200, ch: uartCh }, i2c: { scl, sda, addrBits: 7 }, spi: { mosi: mosi >= 0 ? mosi : 0, miso: miso >= 0 ? miso : 0, sck: sck >= 0 ? sck : 1, cs: cs >= 0 ? cs : -1, mode: 0, bits: 8, csActiveLow: true } };
   }
-  const definedLabels = labels.filter((_, i) => labels[i] !== undefined && labels[i] !== "");
+  const definedLabels = labels.filter((l) => l !== undefined && l !== "");
   const allNumeric = definedLabels.length > 0 && definedLabels.every(l => /^\d+$/.test(l));
+  const detected = detectSpiChannels(capture.samples, capture.width);
+  // For numeric probes, assume the first channels are MOSI/MISO/SCK in order rather than guessing from transitions.
+  const numericSpi = allNumeric && definedLabels.length <= 4
+    ? { mosi: 0, miso: 1, sck: 2, cs: definedLabels.length >= 4 ? 3 : -1 }
+    : detected;
   if ((mosi >= 0 && sck >= 0) || (sck >= 0 && cs >= 0) || (capture.source === "sigrok-sr" && allNumeric && definedLabels.length <= 4)) {
-    return { tab: "spi", uart: { baud: 115200, ch: tx >= 0 ? tx : 0 }, i2c: { scl: scl >= 0 ? scl : 1, sda: sda >= 0 ? sda : 2, addrBits: 7 }, spi: { mosi: mosi >= 0 ? mosi : 0, miso: miso >= 0 ? miso : 1, sck: sck >= 0 ? sck : 2, cs: cs >= 0 ? cs : -1, mode: 0, bits: 8, csActiveLow: true } };
+    return { tab: "spi", uart: { baud: 115200, ch: uartCh }, i2c: { scl: scl >= 0 ? scl : 1, sda: sda >= 0 ? sda : 2, addrBits: 7 }, spi: { mosi: numericSpi.mosi, miso: numericSpi.miso, sck: numericSpi.sck, cs: cs >= 0 ? cs : numericSpi.cs, mode: 0, bits: 8, csActiveLow: true } };
   }
-  return { tab: "uart", uart: { baud: 115200, ch: tx >= 0 ? tx : 0 }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: 3, miso: 4, sck: 5, cs: 6, mode: 0, bits: 8, csActiveLow: true } };
+  return { tab: "uart", uart: { baud: estimateUartBaud(capture.samples, capture.sampleRate, uartCh), ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true } };
+}
+
+export function estimateUartBaud(samples: Uint8Array, sampleRate: number, ch: number): number {
+  const widths: number[] = [];
+  let last = 0;
+  let lastS = 0;
+  for (let s = 0; s < samples.length; s++) {
+    const v = (samples[s] >> ch) & 1;
+    if (v !== last) {
+      widths.push(s - lastS);
+      last = v;
+      lastS = s;
+    }
+  }
+  const positive = widths.filter(w => w > 0).sort((a, b) => a - b);
+  if (positive.length === 0) return 115200;
+  const minW = positive[0]!;
+  // Short pulses are one bit; idle periods are much longer. Use median of short pulses.
+  const short = positive.filter(w => w <= minW * 3);
+  const bitW = short[Math.floor(short.length / 2)] ?? minW;
+  const baud = Math.round(sampleRate / bitW);
+  const std = [300, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600, 1_000_000];
+  let best = 115200;
+  let bestErr = Infinity;
+  for (const b of std) {
+    const err = Math.abs(baud - b);
+    if (err < bestErr) { bestErr = err; best = b; }
+  }
+  return best;
+}
+
+export function detectSpiChannels(samples: Uint8Array, width: number): { sck: number; mosi: number; miso: number; cs: number } {
+  const maxCh = Math.min(width, 16);
+  // Count transitions per channel.
+  const transitions = Array.from({ length: maxCh }, () => 0);
+  const last = new Int8Array(maxCh).fill(-1);
+  for (let s = 0; s < samples.length; s++) {
+    const byte = samples[s]!;
+    for (let ch = 0; ch < maxCh; ch++) {
+      const v = (byte >> ch) & 1;
+      if (last[ch] !== -1 && v !== last[ch]) transitions[ch]++;
+      last[ch] = v;
+    }
+  }
+  // Clock is the channel with the most transitions.
+  const sorted = transitions.map((c, ch) => ({ ch, c })).sort((a, b) => b.c - a.c);
+  const sck = sorted[0]?.c ? sorted[0].ch : 2;
+  // MOSI/MISO are the next two most active channels, excluding SCK.
+  const others = sorted.filter(s => s.ch !== sck).slice(0, 2);
+  const mosi = others[0]?.ch ?? 0;
+  const miso = others[1]?.ch ?? 1;
+  // CS is not detectable from transitions alone; leave it for manual or default.
+  const cs = 6;
+  return { sck, mosi, miso, cs };
 }
 
 export function decodeUartChunk(
