@@ -93,7 +93,7 @@ export function WaveformLaView(props: Props) {
           </button>
         </div>
         <div className="flex-1 min-h-0">
-          <WaveformLaLegacyView {...props} />
+          <WaveformLaLegacyView {...props} capture={capture} />
         </div>
       </div>
     );
