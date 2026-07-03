@@ -10,11 +10,14 @@
   - `laAcquireModes.ts` state machine + tests for run/stop/single acquisition modes
 - **WaveForge LA — Capture import/export (PR3)**
   - `laImport.ts` parses FOB CSV (row-per-sample and transition-only) and JSON captures
-  - `sigrokSrParser.ts` parses sigrok `.sr` ZIP archives in the browser using `DecompressionStream`
+  - `sigrokSrParser.ts` parses sigrok `.sr` ZIP archives in the browser using `DecompressionStream`;
+    handles chunked `logic-1` files and `kHz`/`MHz` sample rate metadata
   - `laExport.ts` exports CSV and JSON, with `downloadLaCapture` helper
   - Import/Export buttons in the new LA toolbar; `.csv`, `.json`, and `.sr` files accepted
   - `LaCapture` type added to `laDecoders.ts`; `LaDecodersPanel` decodes loaded captures
   - `LaCursorsPanel` receives total samples from the loaded capture
+  - Real-corpus validation: `sigrok-dumps` `uart/hello_world/8n1/hello_world_8n1_9600.sr`
+    decodes to "Hello World!\r\n" at 625 kHz / 9600 baud
 
 ### Changed
 - **WaveForge LA — panel architecture**
