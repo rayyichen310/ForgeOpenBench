@@ -6,9 +6,11 @@ import { ChannelsPanel } from "./ChannelsPanel";
 import { AcquirePanel } from "./AcquirePanel";
 import { LaCursorsPanel } from "./LaCursorsPanel";
 import { LaDecodersPanel } from "./LaDecodersPanel";
+import { LaTriggerPanel } from "./LaTriggerPanel";
 import { loadChannels, saveChannels } from "./laChannelConfig";
 import type { LaChannel } from "./laChannelConfig";
 import type { LaAcquireMode } from "./laAcquireModes";
+import type { LaTriggerConfig } from "./laAcquireModes";
 
 interface Props {
   transport: UsbTransport;
@@ -33,6 +35,7 @@ export function WaveformLaView(props: Props) {
   const [showCursors, setShowCursors] = useState(false);
   const [cursorA, setCursorA] = useState<Cursor>({ sample: 0, dragging: false });
   const [cursorB, setCursorB] = useState<Cursor>({ sample: 0, dragging: false });
+  const [trigger, setTrigger] = useState<LaTriggerConfig>({ enabled: false, channel: 0, edge: "rise" });
 
   const handleChannelsChange = (next: LaChannel[]) => {
     saveChannels(next);
@@ -101,7 +104,7 @@ export function WaveformLaView(props: Props) {
             />
           </CollapsibleSection>
           <CollapsibleSection title="Trigger">
-            <span className="text-fob-text-dim">Trigger panel (Phase 6)</span>
+            <LaTriggerPanel trigger={trigger} onChange={setTrigger} disabled={false} />
           </CollapsibleSection>
           <CollapsibleSection title="Cursors">
             <LaCursorsPanel
