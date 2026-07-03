@@ -175,6 +175,15 @@ describe("decodeUartChunk", () => {
     expect(rows[0].error).toBe(true);
   });
 
+  it("decodes even parity for a byte with odd number of ones", () => {
+    const { samples } = makeFakeUartSignal("\x01", RATE, BAUD, 0, "even", 1);
+    const rows = decodeUartChunk(samples, RATE, BAUD, 0, 0, 8, "even", 1);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].byte).toBe(0x01);
+    expect(rows[0].parityOk).toBe(true);
+    expect(rows[0].error).toBe(false);
+  });
+
   it("decodes with inverted logic", () => {
     const { samples } = makeFakeUartSignal("Z", RATE, BAUD, 0, "none", 1);
     const inverted = samples.map(b => b ^ 1);

@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.9.1-rc15] — 2026-07-03
+
+### Added
+- **WaveForge LA — Protocol decoder expansion**
+  - Added SWD, JTAG, Modbus/RS-485, CAN, and 1-Wire decoders to `laDecoders.ts`.
+  - Integrated all new decoders into `LaDecodersPanel`, `WaveformLaView`, and `LaCanvas`.
+  - Real sigrok-dumps fixtures added for SWD, JTAG, and Modbus RTU validation.
+  - `autoDetectLaProtocol` extended to score the new protocols.
+
+### Fixed
+- **WaveForge LA — UART parity bug**
+  - Even/odd parity bit logic was inverted relative to standard UART. Fixed in `decodeUartChunk`, `makeFakeUartSignal`, and `generateModbusFrame`.
+- **WaveForge LA — Modbus short-frame noise**
+  - `parseModbusFrame` now rejects frames shorter than 4 bytes (addr + func + CRC).
+- **WaveForge LA — JTAG shift overflow**
+  - Final mid-shift flush now masks `tdi`/`tdo` values by bit count to avoid overflow on scans > 32 bits.
+
+### Changed
+- **Documentation**
+  - `README.md` now lists the full LA protocol decoder set (UART, I2C, SPI, CAN, 1-Wire, SWD, JTAG, Modbus/RS-485).
+  - `README.md` roadmap link now points to the live GitHub Discussion #13 instead of a missing `docs/ROADMAP.md`.
+
 ## [0.9.1-rc14] — 2026-07-02
 
 ### Added
