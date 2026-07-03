@@ -3,7 +3,7 @@ import { readFile } from "fs/promises";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { parseSigrokSr } from "./sigrokSrParser";
-import { decodeUartChunk, decodeI2C, decodeSPI, inferDecoderDefaults, autoDetectLaProtocol } from "./laDecoders";
+import { decodeUartChunk, decodeI2C, decodeSPI, decodeSWD, decodeJTAG, decodeModbus, inferDecoderDefaults, autoDetectLaProtocol } from "./laDecoders";
 
 const FIXTURE_DIR = join(dirname(fileURLToPath(import.meta.url)), "test-fixtures", "sigrok");
 
@@ -69,5 +69,39 @@ describe("sigrok-dumps fixtures", () => {
     const spiResult = autoDetectLaProtocol(spiCap);
     expect(spiResult.tab).toBe("spi");
     expect(spiResult.spi?.sck).toBe(0);
+  });
+
+  it("decodes synthetic SWD sigrok fixture", async () => {
+    const cap = await parseSigrokSr(await loadFixture("swd-reset-read.sr"));
+    expect(cap.sampleRate).toBe(1_000_000);
+    expect(cap.width).toBe(8);
+    expect(cap.samples.length).toBeGreaterThan(0);
+    const cfg = inferDecoderDefaults(cap);
+    expect(cfg.tab).toBe("swd");
+    const frames = decodeSWD(cap.samples, cap.sampleRate, cfg.swd.swdio, cfg.swd.swclk);
+    expect(frames.length).toBeGreaterThan(0);
+  });
+
+  it("decodes synthetic JTAG sigrok fixture", async () => {
+    const cap = await parseSigrokSr(await loadFixture("jtag-ir-dr.sr"));
+    expect(cap.sampleRate).toBe(1_000_000);
+    expect(cap.width).toBe(8);
+    expect(cap.samples.length).toBeGreaterThan(0);
+    const cfg = inferDecoderDefaults(cap);
+    expect(cfg.tab).toBe("jtag");
+    const frames = decodeJTAG(cap.samples, cap.sampleRate, cfg.jtag.tck, cfg.jtag.tms, cfg.jtag.tdi, cfg.jtag.tdo);
+    expect(frames.filter(f => f.type === "shift").length).toBeGreaterThan(0);
+  });
+
+  it("decodes synthetic Modbus sigrok fixture", async () => {
+    const cap = await parseSigrokSr(await loadFixture("modbus-read-holding.sr"));
+    expect(cap.sampleRate).toBe(1_000_000);
+    expect(cap.width).toBe(8);
+    expect(cap.samples.length).toBeGreaterThan(0);
+    const cfg = inferDecoderDefaults(cap);
+    expect(cfg.tab).toBe("modbus");
+    const frames = decodeModbus(cap.samples, cap.sampleRate, cfg.modbus.ch, cfg.modbus.baud, cfg.modbus.parity);
+    expect(frames.length).toBeGreaterThan(0);
+    expect(frames[0].crcOk).toBe(true);
   });
 });

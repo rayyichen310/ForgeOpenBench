@@ -69,7 +69,18 @@ export interface JTAGFrame {
   bits?: number;
 }
 
-export type DecoderTab = "uart" | "i2c" | "spi" | "can" | "onewire" | "swd" | "jtag";
+export interface ModbusFrame {
+  startSample: number;
+  endSample: number;
+  ts: number;
+  type: "request" | "response" | "error";
+  addr: number;
+  func: number;
+  data: number[];
+  crcOk: boolean;
+}
+
+export type DecoderTab = "uart" | "i2c" | "spi" | "can" | "onewire" | "swd" | "jtag" | "modbus";
 
 export interface LaCapture {
   sampleRate: number;
@@ -89,6 +100,7 @@ export interface DecoderDefaults {
   onewire: { ch: number };
   swd: { swdio: number; swclk: number };
   jtag: { tck: number; tms: number; tdi: number; tdo: number };
+  modbus: { ch: number; baud: number; parity: "none" | "even" | "odd" };
 }
 
 export function inferDecoderDefaults(capture: LaCapture): DecoderDefaults {
@@ -122,19 +134,30 @@ export function inferDecoderDefaults(capture: LaCapture): DecoderDefaults {
   const jtagTdi = find(["tdi", "jtagtdi"]);
   const jtagTdo = find(["tdo", "jtagtdo"]);
   const jtagDefaults = { tck: jtagTck >= 0 ? jtagTck : 0, tms: jtagTms >= 0 ? jtagTms : 1, tdi: jtagTdi >= 0 ? jtagTdi : 2, tdo: jtagTdo >= 0 ? jtagTdo : 3 };
+  const modbusCh = find(["rs485", "modbus", "485"]);
+  const modbusDefaults = { ch: modbusCh >= 0 ? modbusCh : uartCh, baud: 9600, parity: "even" as const };
   if (scl >= 0 && sda >= 0) {
-    return { tab: "i2c", uart: { baud: 115200, ch: uartCh }, i2c: { scl, sda, addrBits: 7 }, spi: { mosi: mosi >= 0 ? mosi : 0, miso: miso >= 0 ? miso : 0, sck: sck >= 0 ? sck : 1, cs: cs >= 0 ? cs : -1, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults };
+    return { tab: "i2c", uart: { baud: 115200, ch: uartCh }, i2c: { scl, sda, addrBits: 7 }, spi: { mosi: mosi >= 0 ? mosi : 0, miso: miso >= 0 ? miso : 0, sck: sck >= 0 ? sck : 1, cs: cs >= 0 ? cs : -1, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults };
   }
   const definedLabels = labels.filter((l) => l !== undefined && l !== "");
   const allNumeric = definedLabels.length > 0 && definedLabels.every(l => /^\d+$/.test(l));
   const detected = detectSpiChannels(capture.samples, capture.width);
   if ((mosi >= 0 && sck >= 0) || (sck >= 0 && cs >= 0)) {
-    return { tab: "spi", uart: { baud: 115200, ch: uartCh }, i2c: { scl: scl >= 0 ? scl : 1, sda: sda >= 0 ? sda : 2, addrBits: 7 }, spi: { mosi: mosi >= 0 ? mosi : 0, miso: miso >= 0 ? miso : 1, sck: sck >= 0 ? sck : 2, cs: cs >= 0 ? cs : -1, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults };
+    return { tab: "spi", uart: { baud: 115200, ch: uartCh }, i2c: { scl: scl >= 0 ? scl : 1, sda: sda >= 0 ? sda : 2, addrBits: 7 }, spi: { mosi: mosi >= 0 ? mosi : 0, miso: miso >= 0 ? miso : 1, sck: sck >= 0 ? sck : 2, cs: cs >= 0 ? cs : -1, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults };
   }
   if (capture.source === "sigrok-sr" && allNumeric && definedLabels.length <= 4) {
-    return { tab: "spi", uart: { baud: 115200, ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: -1, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults };
+    return { tab: "spi", uart: { baud: 115200, ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: -1, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults };
   }
-  return { tab: "uart", uart: { baud: estimateUartBaud(capture.samples, capture.sampleRate, uartCh), ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults };
+  if (swdClk >= 0 && swdDio >= 0) {
+    return { tab: "swd", uart: { baud: 115200, ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults };
+  }
+  if (jtagTck >= 0 && jtagTms >= 0) {
+    return { tab: "jtag", uart: { baud: 115200, ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults };
+  }
+  if (modbusCh >= 0) {
+    return { tab: "modbus", uart: { baud: 115200, ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults };
+  }
+  return { tab: "uart", uart: { baud: estimateUartBaud(capture.samples, capture.sampleRate, uartCh), ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults };
 }
 
 export function estimateUartBaud(samples: Uint8Array, sampleRate: number, ch: number): number {
@@ -217,6 +240,7 @@ export interface AutoDetectResult {
   onewire?: { ch: number };
   swd?: { swdio: number; swclk: number };
   jtag?: { tck: number; tms: number; tdi: number; tdo: number };
+  modbus?: { ch: number; baud: number; parity: "none" | "even" | "odd" };
 }
 
 /**
@@ -263,6 +287,11 @@ export function autoDetectLaProtocol(capture: LaCapture): AutoDetectResult {
     const frames = decodeJTAG(samples, rate, labelDefaults.jtag.tck, labelDefaults.jtag.tms, labelDefaults.jtag.tdi, labelDefaults.jtag.tdo);
     const stateFrames = frames.filter(f => f.type === "state" || f.type === "shift").length;
     if (stateFrames > 0) return { tab: "jtag", score: stateFrames, reason: `JTAG on D${labelDefaults.jtag.tck}/D${labelDefaults.jtag.tms}/D${labelDefaults.jtag.tdi}/D${labelDefaults.jtag.tdo} (labels)`, jtag: labelDefaults.jtag };
+  }
+  if (labelDefaults.modbus) {
+    const frames = decodeModbus(samples, rate, labelDefaults.modbus.ch, labelDefaults.modbus.baud, labelDefaults.modbus.parity);
+    const validFrames = frames.filter(f => f.crcOk).length;
+    if (validFrames > 0) return { tab: "modbus", score: validFrames, reason: `Modbus RTU ${labelDefaults.modbus.baud.toLocaleString()} baud on D${labelDefaults.modbus.ch} (labels)`, modbus: labelDefaults.modbus };
   }
 
   const active = getActiveChannels(samples, width);
@@ -345,6 +374,19 @@ export function autoDetectLaProtocol(capture: LaCapture): AutoDetectResult {
           if (score > best.score) {
             best = { tab: "jtag", score, reason: `JTAG D${tck}/D${tms}/D${tdi}/D${tdo}`, jtag: { tck, tms, tdi, tdo } };
           }
+        }
+      }
+    }
+  }
+
+  // Modbus: try each active channel at common RTU bauds.
+  for (const ch of active) {
+    for (const baud of [9600, 19200, 38400, 57600, 115200]) {
+      for (const parity of (["even", "none", "odd"] as const)) {
+        const frames = decodeModbus(samples, rate, ch, baud, parity);
+        const score = frames.filter(f => f.crcOk).length * 3;
+        if (score > best.score) {
+          best = { tab: "modbus", score, reason: `Modbus RTU ${baud.toLocaleString()} baud D${ch}`, modbus: { ch, baud, parity } };
         }
       }
     }
@@ -1302,4 +1344,130 @@ export function generateJtagFrame(
 
   cycle(0, 0, 0); // stay in Run-Test/Idle
   return Uint8Array.from(out);
+}
+
+// ---------------------------------------------------------------------------
+// Modbus RTU decoder
+// ---------------------------------------------------------------------------
+
+// Modbus CRC-16 (polynomial 0x8005, init 0xFFFF).
+function modbusCrc(data: number[]): number {
+  let crc = 0xffff;
+  for (const byte of data) {
+    crc ^= byte;
+    for (let i = 0; i < 8; i++) {
+      if (crc & 1) {
+        crc = (crc >> 1) ^ 0xa001;
+      } else {
+        crc >>= 1;
+      }
+    }
+  }
+  return crc & 0xffff;
+}
+
+export function decodeModbus(
+  samples: Uint8Array,
+  sampleRate: number,
+  channel: number,
+  baud: number,
+  parity: "none" | "even" | "odd" = "even"
+): ModbusFrame[] {
+  const frames: ModbusFrame[] = [];
+  // Decode bytes with 8 data bits and the selected parity.
+  const rows = decodeUartChunk(samples, sampleRate, baud, channel, 0, 8, parity, 1);
+  if (rows.length < 2) return frames;
+
+  // A Modbus RTU frame ends with a silent interval of at least 3.5 character times.
+  const charSamples = sampleRate / baud;
+  const byteSamples = charSamples * (parity === "none" ? 10 : 11); // 1 start + 8 data + (1 parity) + 1 stop
+  const gapSamples = charSamples * 3.5;
+
+  // Group rows into frames by inter-frame silence (measured from end of previous byte to start of next).
+  let current: typeof rows = [];
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    if (i > 0) {
+      const prevEnd = rows[i - 1].sample + Math.round(byteSamples);
+      const gap = row.sample - prevEnd;
+      if (gap >= gapSamples) {
+        if (current.length >= 2) {
+          const frame = parseModbusFrame(current, sampleRate);
+          if (frame) frames.push(frame);
+        }
+        current = [];
+      }
+    }
+    current.push(row);
+  }
+  if (current.length >= 2) {
+    const frame = parseModbusFrame(current, sampleRate);
+    if (frame) frames.push(frame);
+  }
+
+  return frames.slice(0, MAX_TICKER);
+}
+
+function parseModbusFrame(rows: TickerRow[], sampleRate: number): ModbusFrame | null {
+  const bytes = rows.map(r => r.byte);
+  if (bytes.length < 2) return null;
+  const addr = bytes[0];
+  const func = bytes[1];
+  const payload = bytes.slice(0, -2);
+  const crcReceived = bytes[bytes.length - 1] * 256 + bytes[bytes.length - 2];
+  const crcComputed = modbusCrc(payload);
+  const crcOk = crcReceived === crcComputed;
+  const data = bytes.slice(2, -2);
+  const type = func & 0x80 ? "error" : "request";
+  return {
+    startSample: rows[0].sample,
+    endSample: rows[rows.length - 1].sample,
+    ts: rows[0].sample / sampleRate,
+    type,
+    addr,
+    func: func & 0x7f,
+    data,
+    crcOk,
+  };
+}
+
+// Generate a synthetic Modbus RTU pattern on the given channel.
+// Supports 8E1 (even) or 8N1 by setting parity.
+export function generateModbusFrame(
+  sampleRate: number,
+  channel: number,
+  baud: number,
+  addr: number,
+  func: number,
+  data: number[],
+  parity: "none" | "even" | "odd" = "even"
+): Uint8Array {
+  const payload = [addr, func, ...data];
+  const crc = modbusCrc(payload);
+  const bytes = [...payload, crc & 0xff, (crc >> 8) & 0xff];
+
+  const spb = Math.max(1, Math.floor(sampleRate / baud));
+  const bits: number[] = [];
+  const pushBit = (b: number, n: number) => { for (let i = 0; i < n; i++) bits.push(b); };
+  const byte = (b: number) => {
+    pushBit(0, spb); // start
+    for (let i = 0; i < 8; i++) pushBit((b >> i) & 1, spb);
+    if (parity !== "none") {
+      const ones = b.toString(2).split("").filter(c => c === "1").length;
+      const parBit = parity === "even" ? (ones % 2 === 0 ? 1 : 0) : (ones % 2 === 1 ? 1 : 0);
+      pushBit(parBit, spb);
+    }
+    pushBit(1, spb); // stop
+    pushBit(1, spb); // inter-byte gap
+  };
+
+  // Leading idle (3.5 char times of silence)
+  pushBit(1, Math.round(spb * 11 * 3.5));
+  for (const b of bytes) byte(b);
+  // Trailing idle
+  pushBit(1, Math.round(spb * 11 * 3.5));
+
+  const samples = new Uint8Array(bits.length);
+  for (let i = 0; i < bits.length; i++) samples[i] = bits[i] << channel;
+  return samples;
 }

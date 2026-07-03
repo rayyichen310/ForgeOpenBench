@@ -8,12 +8,14 @@ import {
   decodeOneWire,
   decodeSWD,
   decodeJTAG,
+  decodeModbus,
   generateLaTestPattern,
   makeFakeUartSignal,
   generateCanFrame,
   generateOneWireFrame,
   generateSwdFrame,
   generateJtagFrame,
+  generateModbusFrame,
   MAX_TICKER,
   inferDecoderDefaults,
   autoDetectLaProtocol,
@@ -421,7 +423,7 @@ describe("autoDetectLaProtocol", () => {
     const samples = generateLaTestPattern(1_000_000, 1);
     const result = autoDetectLaProtocol(cap(samples, 1_000_000));
     expect(result.score).toBeGreaterThan(0);
-    expect(result.tab).toMatch(/^(uart|i2c|spi|can|onewire|swd|jtag)$/);
+    expect(result.tab).toMatch(/^(uart|i2c|spi|can|onewire|swd|jtag|modbus)$/);
   });
   it("returns a positive score for a CAN signal", () => {
     const samples = generateCanFrame(1_000_000, 500_000, 3, 0x123, [0xDE, 0xAD, 0xBE, 0xEF]);
@@ -450,6 +452,13 @@ describe("autoDetectLaProtocol", () => {
     expect(result.score).toBeGreaterThan(0);
     expect(result.tab).toBe("jtag");
     expect(result.jtag).toBeDefined();
+  });
+  it("returns a positive score for a Modbus signal", () => {
+    const samples = generateModbusFrame(1_000_000, 2, 9600, 1, 0x03, [0x00, 0x00, 0x00, 0x0A], "even");
+    const result = autoDetectLaProtocol({ ...cap(samples, 1_000_000), channelLabels: ["", "", "RS485"] });
+    expect(result.score).toBeGreaterThan(0);
+    expect(result.tab).toBe("modbus");
+    expect(result.modbus).toBeDefined();
   });
 });
 
@@ -595,5 +604,44 @@ describe("decodeJTAG", () => {
     expect(shifts[1].register).toBe("DR");
     expect(shifts[1].tdi).toBe(0x1234);
     expect(shifts[1].tdo).toBe(0x4321);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// decodeModbus
+// ---------------------------------------------------------------------------
+
+describe("decodeModbus", () => {
+  const RATE = 1_000_000;
+  const BAUD = 9600;
+
+  it("decodes a read holding registers request", () => {
+    const samples = generateModbusFrame(RATE, 0, BAUD, 1, 0x03, [0x00, 0x00, 0x00, 0x0A], "even");
+    const frames = decodeModbus(samples, RATE, 0, BAUD, "even");
+    expect(frames).toHaveLength(1);
+    expect(frames[0].addr).toBe(1);
+    expect(frames[0].func).toBe(0x03);
+    expect(frames[0].data).toEqual([0x00, 0x00, 0x00, 0x0A]);
+    expect(frames[0].crcOk).toBe(true);
+  });
+
+  it("decodes on a different channel with no parity", () => {
+    const samples = generateModbusFrame(RATE, 3, BAUD, 5, 0x10, [0x00, 0x01, 0x02, 0x00, 0x01, 0x02, 0xAB], "none");
+    const frames = decodeModbus(samples, RATE, 3, BAUD, "none");
+    expect(frames).toHaveLength(1);
+    expect(frames[0].addr).toBe(5);
+    expect(frames[0].func).toBe(0x10);
+    expect(frames[0].crcOk).toBe(true);
+  });
+
+  it("decodes an exception response", () => {
+    const samples = generateModbusFrame(RATE, 0, BAUD, 2, 0x83, [0x02], "even");
+    const frames = decodeModbus(samples, RATE, 0, BAUD, "even");
+    expect(frames).toHaveLength(1);
+    expect(frames[0].addr).toBe(2);
+    expect(frames[0].type).toBe("error");
+    expect(frames[0].func).toBe(0x03);
+    expect(frames[0].data).toEqual([0x02]);
+    expect(frames[0].crcOk).toBe(true);
   });
 });

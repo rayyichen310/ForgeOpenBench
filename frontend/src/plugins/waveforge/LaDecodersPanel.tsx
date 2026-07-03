@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
-import { decodeUartChunk, decodeI2C, decodeSPI, decodeCAN, decodeOneWire, decodeSWD, decodeJTAG, autoDetectLaProtocol, MAX_TICKER } from "./laDecoders";
+import { decodeUartChunk, decodeI2C, decodeSPI, decodeCAN, decodeOneWire, decodeSWD, decodeJTAG, decodeModbus, autoDetectLaProtocol, MAX_TICKER } from "./laDecoders";
 import type { DecoderTab, LaCapture, AutoDetectResult } from "./laDecoders";
 import { DEFAULT_BAUDS } from "./laChannelConfig";
 
@@ -10,6 +10,7 @@ interface CanConfig { ch: number; baud: number; }
 interface OneWireConfig { ch: number; }
 interface SwdConfig { swdio: number; swclk: number; }
 interface JtagConfig { tck: number; tms: number; tdi: number; tdo: number; }
+interface ModbusConfig { ch: number; baud: number; parity: "none" | "even" | "odd"; }
 
 interface Props {
   frozenBuf?: Uint8Array | null;
@@ -23,8 +24,9 @@ interface Props {
   defaultOneWire?: OneWireConfig;
   defaultSwd?: SwdConfig;
   defaultJtag?: JtagConfig;
+  defaultModbus?: ModbusConfig;
   suggestedTab?: DecoderTab;
-  onChange?: (state: { tab: DecoderTab; uart: UartConfig; i2c: I2cConfig; spi: SpiConfig; can: CanConfig; onewire: OneWireConfig; swd: SwdConfig; jtag: JtagConfig }) => void;
+  onChange?: (state: { tab: DecoderTab; uart: UartConfig; i2c: I2cConfig; spi: SpiConfig; can: CanConfig; onewire: OneWireConfig; swd: SwdConfig; jtag: JtagConfig; modbus: ModbusConfig }) => void;
 }
 
 function ascii(b: number) {
@@ -35,7 +37,7 @@ function fmt(ts: number) {
   return ts < 1e-3 ? `${(ts * 1e6).toFixed(0)}µs` : `${(ts * 1e3).toFixed(2)}ms`;
 }
 
-export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defaultUart, defaultI2c, defaultSpi, defaultCan, defaultOneWire, defaultSwd, defaultJtag, suggestedTab, onChange }: Props) {
+export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defaultUart, defaultI2c, defaultSpi, defaultCan, defaultOneWire, defaultSwd, defaultJtag, defaultModbus, suggestedTab, onChange }: Props) {
   const effectiveBuf = capture?.samples ?? frozenBuf ?? null;
   const effectiveRate = capture?.sampleRate ?? sampleRate ?? 0;
   const [tab, setTab] = useState<DecoderTab>(suggestedTab ?? "uart");
@@ -46,6 +48,7 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
   const [onewire, setOneWire] = useState<OneWireConfig>(defaultOneWire ?? { ch: 0 });
   const [swd, setSwd] = useState<SwdConfig>(defaultSwd ?? { swdio: 1, swclk: 0 });
   const [jtag, setJtag] = useState<JtagConfig>(defaultJtag ?? { tck: 0, tms: 1, tdi: 2, tdo: 3 });
+  const [modbus, setModbus] = useState<ModbusConfig>(defaultModbus ?? { ch: 0, baud: 9600, parity: "even" });
   const [lastAutoDetect, setLastAutoDetect] = useState<AutoDetectResult | null>(null);
 
   useEffect(() => {
@@ -58,7 +61,8 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
   useEffect(() => { if (defaultOneWire) setOneWire(defaultOneWire); }, [defaultOneWire]);
   useEffect(() => { if (defaultSwd) setSwd(defaultSwd); }, [defaultSwd]);
   useEffect(() => { if (defaultJtag) setJtag(defaultJtag); }, [defaultJtag]);
-  useEffect(() => { onChange?.({ tab, uart, i2c, spi, can, onewire, swd, jtag }); }, [tab, uart, i2c, spi, can, onewire, swd, jtag, onChange]);
+  useEffect(() => { if (defaultModbus) setModbus(defaultModbus); }, [defaultModbus]);
+  useEffect(() => { onChange?.({ tab, uart, i2c, spi, can, onewire, swd, jtag, modbus }); }, [tab, uart, i2c, spi, can, onewire, swd, jtag, modbus, onChange]);
 
   const handleAutoDetect = useCallback(() => {
     if (!effectiveBuf || effectiveBuf.length === 0 || effectiveRate <= 0) return;
@@ -73,6 +77,7 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
     if (result.onewire) setOneWire(result.onewire);
     if (result.swd) setSwd(result.swd);
     if (result.jtag) setJtag(result.jtag);
+    if (result.modbus) setModbus(result.modbus);
   }, [effectiveBuf, effectiveRate, capture]);
 
   const uartRows = useMemo(() => {
@@ -110,11 +115,16 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
     return decodeJTAG(effectiveBuf, effectiveRate, jtag.tck, jtag.tms, jtag.tdi, jtag.tdo).slice(0, MAX_TICKER);
   }, [effectiveBuf, effectiveRate, jtag]);
 
+  const modbusRows = useMemo(() => {
+    if (!effectiveBuf || effectiveBuf.length === 0) return [];
+    return decodeModbus(effectiveBuf, effectiveRate, modbus.ch, modbus.baud, modbus.parity).slice(0, MAX_TICKER);
+  }, [effectiveBuf, effectiveRate, modbus]);
+
   return (
     <div className="flex flex-col h-full min-h-0">
       {/* Tabs */}
       <div className="flex items-center gap-1 px-2 py-1 bg-fob-surface border-b border-fob-border text-xs shrink-0">
-        {(["uart", "i2c", "spi", "can", "onewire", "swd", "jtag"] as DecoderTab[]).map(t => (
+        {(["uart", "i2c", "spi", "can", "onewire", "swd", "jtag", "modbus"] as DecoderTab[]).map(t => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -430,6 +440,49 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
                       <span className="text-fob-text-dim shrink-0">({r.bits} bits)</span>
                     </>
                   )}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Modbus */}
+      {tab === "modbus" && (
+        <div className="flex flex-col flex-1 min-h-0">
+          <div className="flex items-center gap-2 px-2 py-1 bg-fob-surface border-b border-fob-border text-xs shrink-0 flex-wrap">
+            <span className="text-fob-text-dim">CH:</span>
+            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14"
+              value={modbus.ch} onChange={e => setModbus(c => ({ ...c, ch: Number(e.target.value) }))}>
+              {Array.from({ length: 16 }, (_, i) => <option key={i} value={i}>D{i}</option>)}
+            </select>
+            <span className="text-fob-text-dim">Baud:</span>
+            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-20"
+              value={modbus.baud} onChange={e => setModbus(c => ({ ...c, baud: Number(e.target.value) }))}>
+              {[9600, 19200, 38400, 57600, 115200].map(b => <option key={b} value={b}>{b}</option>)}
+            </select>
+            <span className="text-fob-text-dim">Parity:</span>
+            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-16"
+              value={modbus.parity} onChange={e => setModbus(c => ({ ...c, parity: e.target.value as "none" | "even" | "odd" }))}>
+              <option value="even">Even</option>
+              <option value="odd">Odd</option>
+              <option value="none">None</option>
+            </select>
+          </div>
+          <div className="flex-1 overflow-y-auto font-mono text-[11px] px-2 py-1 space-y-0">
+            {modbusRows.length === 0 ? (
+              <div className="text-fob-text-dim text-center mt-4">
+                {running ? "Stop capture to decode Modbus" : "No Modbus traffic — check channel/baud/parity"}
+              </div>
+            ) : (
+              modbusRows.map((r, i) => (
+                <div key={i} className="flex gap-3 leading-5 text-fob-text">
+                  <span className="text-fob-text-dim w-16 shrink-0">{fmt(r.ts)}</span>
+                  <span className="text-fob-blue shrink-0">{r.type.toUpperCase()}</span>
+                  <span className="text-fob-yellow shrink-0">ADDR {r.addr}</span>
+                  <span className="text-fob-text-dim shrink-0">FUNC 0x{r.func.toString(16).padStart(2, "0").toUpperCase()}</span>
+                  <span className="text-fob-green shrink-0">{r.data.map(b => b.toString(16).padStart(2, "0").toUpperCase()).join(" ")}</span>
+                  {r.crcOk ? <span className="text-fob-green shrink-0">OK</span> : <span className="text-fob-red shrink-0">CRC</span>}
                 </div>
               ))
             )}

@@ -1,7 +1,7 @@
 import { useRef, useEffect, useCallback } from "react";
 import type { LaChannel } from "./laChannelConfig";
 import { CHANNEL_COLORS, DEFAULT_LABEL_WIDTH } from "./laChannelConfig";
-import type { DecoderTab, TickerRow, I2CFrame, SPIFrame, CANFrame, OneWireFrame, SWDFrame, JTAGFrame } from "./laDecoders";
+import type { DecoderTab, TickerRow, I2CFrame, SPIFrame, CANFrame, OneWireFrame, SWDFrame, JTAGFrame, ModbusFrame } from "./laDecoders";
 
 interface Props {
   samples: Uint8Array;
@@ -18,6 +18,7 @@ interface Props {
   oneWireRows?: OneWireFrame[];
   swdRows?: SWDFrame[];
   jtagRows?: JTAGFrame[];
+  modbusRows?: ModbusFrame[];
   decoderChannel?: number;
   decoderSda?: number;
   decoderMosi?: number;
@@ -25,6 +26,7 @@ interface Props {
   decoderOneWire?: number;
   decoderSwd?: { swdio: number; swclk: number };
   decoderJtag?: { tck: number; tms: number; tdi: number; tdo: number };
+  decoderModbus?: { ch: number; baud: number; parity: "none" | "even" | "odd" };
   showCursors?: boolean;
   cursorA?: number;
   cursorB?: number;
@@ -264,6 +266,15 @@ export function LaCanvas(props: Props) {
           if (r.type === "reset") drawBubble(r.startSample, tmsChIdx, "RST", color);
           else if (r.type === "state") drawBubble(r.startSample, tmsChIdx, r.state ?? "", color);
           else if (r.type === "shift" && r.tdi !== undefined) drawBubble(r.startSample, tmsChIdx, `${r.register} 0x${r.tdi.toString(16).padStart(Math.ceil((r.bits ?? 1) / 4), "0").toUpperCase()}`, color);
+        });
+      }
+    }
+    if (props.decoderTab === "modbus" && props.modbusRows && props.decoderModbus) {
+      const chIdx = visible.findIndex(c => c.id === props.decoderModbus?.ch);
+      if (chIdx >= 0) {
+        const color = visible[chIdx]?.color || CHANNEL_COLORS[props.decoderModbus.ch];
+        props.modbusRows.forEach(r => {
+          drawBubble(r.startSample, chIdx, `A${r.addr} F${r.func.toString(16).padStart(2, "0").toUpperCase()}`, color);
         });
       }
     }
