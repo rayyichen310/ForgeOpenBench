@@ -45,8 +45,9 @@ describe("sigrok-dumps fixtures", () => {
     expect(cap.samples.length).toBeGreaterThan(0);
     const cfg = inferDecoderDefaults(cap);
     expect(cfg.tab).toBe("spi");
-    expect(cfg.spi.sck).toBe(2);
-    expect(cfg.spi.mosi).toBe(0);
+    // Signal analysis: ch0 is the fastest toggler (clock), ch2 is MOSI.
+    expect(cfg.spi.sck).toBe(0);
+    expect(cfg.spi.mosi).toBe(2);
     // No CS line in this fixture.
     const frames = decodeSPI(cap.samples, cap.sampleRate, cfg.spi.mosi, cfg.spi.miso, cfg.spi.sck, -1, 0, 8, true);
     expect(frames.length).toBeGreaterThan(0);

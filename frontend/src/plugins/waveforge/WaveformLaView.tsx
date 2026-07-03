@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useMemo } from "react";
 import type { UsbTransport } from "./UsbTransport";
 import { WaveformLaLegacyView } from "./WaveformLaLegacyView";
 import { CollapsibleSection } from "./CollapsibleSection";
@@ -42,9 +42,9 @@ export function WaveformLaView(props: Props) {
   const [cursorB, setCursorB] = useState<Cursor>({ sample: 0, dragging: false });
   const [trigger, setTrigger] = useState<LaTriggerConfig>({ enabled: false, channel: 0, edge: "rise" });
   const [capture, setCapture] = useState<LaCapture | null>(null);
-  const [decoderDefaults, setDecoderDefaults] = useState<DecoderDefaults>(inferDecoderDefaults({
+  const decoderDefaults = useMemo<DecoderDefaults>(() => inferDecoderDefaults(capture ?? {
     sampleRate: 12_000_000, width: 16, samples: new Uint8Array(0), source: "none", importedAt: new Date().toISOString(),
-  }));
+  }), [capture]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleChannelsChange = (next: LaChannel[]) => {
@@ -75,7 +75,6 @@ export function WaveformLaView(props: Props) {
     setCapture(loaded);
     setSampleRate(loaded.sampleRate);
     setWidth(loaded.width);
-    setDecoderDefaults(inferDecoderDefaults(loaded));
     if (fileInputRef.current) fileInputRef.current.value = "";
   }, []);
 
@@ -94,7 +93,6 @@ export function WaveformLaView(props: Props) {
     setCapture(loaded);
     setSampleRate(rate);
     setWidth(8);
-    setDecoderDefaults(inferDecoderDefaults(loaded));
   }, [isRunning]);
 
   const handleExport = useCallback(() => {
