@@ -1,7 +1,7 @@
 import { useRef, useEffect, useCallback } from "react";
 import type { LaChannel } from "./laChannelConfig";
 import { CHANNEL_COLORS, DEFAULT_LABEL_WIDTH } from "./laChannelConfig";
-import type { DecoderTab, TickerRow, I2CFrame, SPIFrame } from "./laDecoders";
+import type { DecoderTab, TickerRow, I2CFrame, SPIFrame, CANFrame, OneWireFrame, SWDFrame, JTAGFrame, ModbusFrame } from "./laDecoders";
 
 interface Props {
   samples: Uint8Array;
@@ -14,9 +14,19 @@ interface Props {
   decoderRows?: TickerRow[];
   i2cRows?: I2CFrame[];
   spiRows?: SPIFrame[];
+  canRows?: CANFrame[];
+  oneWireRows?: OneWireFrame[];
+  swdRows?: SWDFrame[];
+  jtagRows?: JTAGFrame[];
+  modbusRows?: ModbusFrame[];
   decoderChannel?: number;
   decoderSda?: number;
   decoderMosi?: number;
+  decoderCan?: number;
+  decoderOneWire?: number;
+  decoderSwd?: { swdio: number; swclk: number };
+  decoderJtag?: { tck: number; tms: number; tdi: number; tdo: number };
+  decoderModbus?: { ch: number; baud: number; parity: "none" | "even" | "odd" };
   showCursors?: boolean;
   cursorA?: number;
   cursorB?: number;
@@ -210,6 +220,61 @@ export function LaCanvas(props: Props) {
         props.spiRows.forEach(r => {
           if (r.mosi !== undefined) drawBubble(r.startSample, chIdx, `M0x${r.mosi.toString(16).padStart(digits, "0").toUpperCase()}`, color);
           else if (r.miso !== undefined) drawBubble(r.startSample, chIdx, `S0x${r.miso.toString(16).padStart(digits, "0").toUpperCase()}`, color);
+        });
+      }
+    }
+    if (props.decoderTab === "can" && props.canRows) {
+      const chIdx = visible.findIndex(c => c.id === props.decoderCan);
+      if (chIdx >= 0) {
+        const color = visible[chIdx]?.color || CHANNEL_COLORS[props.decoderCan ?? 0];
+        props.canRows.forEach(r => {
+          const label = r.extended ? `ExtID 0x${r.id.toString(16).toUpperCase()}` : `ID 0x${r.id.toString(16).toUpperCase()}`;
+          drawBubble(r.startSample, chIdx, label, color);
+          if (r.data.length > 0) {
+            drawBubble(r.endSample, chIdx, r.data.map(b => b.toString(16).padStart(2, "0").toUpperCase()).join(" "), color);
+          }
+        });
+      }
+    }
+    if (props.decoderTab === "onewire" && props.oneWireRows) {
+      const chIdx = visible.findIndex(c => c.id === props.decoderOneWire);
+      if (chIdx >= 0) {
+        const color = visible[chIdx]?.color || CHANNEL_COLORS[props.decoderOneWire ?? 0];
+        props.oneWireRows.forEach(r => {
+          if (r.type === "reset") drawBubble(r.startSample, chIdx, "RST", color);
+          else if (r.type === "presence") drawBubble(r.startSample, chIdx, "PRES", color);
+          else if (r.type === "byte" && r.value !== undefined) drawBubble(r.startSample, chIdx, `0x${r.value.toString(16).padStart(2, "0").toUpperCase()}`, color);
+        });
+      }
+    }
+    if (props.decoderTab === "swd" && props.swdRows && props.decoderSwd) {
+      const chIdx = visible.findIndex(c => c.id === props.decoderSwd?.swdio);
+      if (chIdx >= 0) {
+        const color = visible[chIdx]?.color || CHANNEL_COLORS[props.decoderSwd.swdio];
+        props.swdRows.forEach(r => {
+          if (r.type === "reset") drawBubble(r.startSample, chIdx, "RST", color);
+          else if (r.type === "request") drawBubble(r.startSample, chIdx, `${r.read ? "R" : "W"}${r.apnDp === 1 ? "AP" : "DP"} 0x${r.addr!.toString(16)}`, color);
+          else if (r.type === "data" && r.data !== undefined) drawBubble(r.startSample, chIdx, `0x${r.data.toString(16).padStart(8, "0").toUpperCase()}`, color);
+        });
+      }
+    }
+    if (props.decoderTab === "jtag" && props.jtagRows && props.decoderJtag) {
+      const tmsChIdx = visible.findIndex(c => c.id === props.decoderJtag?.tms);
+      if (tmsChIdx >= 0) {
+        const color = visible[tmsChIdx]?.color || CHANNEL_COLORS[props.decoderJtag.tms];
+        props.jtagRows.forEach(r => {
+          if (r.type === "reset") drawBubble(r.startSample, tmsChIdx, "RST", color);
+          else if (r.type === "state") drawBubble(r.startSample, tmsChIdx, r.state ?? "", color);
+          else if (r.type === "shift" && r.tdi !== undefined) drawBubble(r.startSample, tmsChIdx, `${r.register} 0x${r.tdi.toString(16).padStart(Math.ceil((r.bits ?? 1) / 4), "0").toUpperCase()}`, color);
+        });
+      }
+    }
+    if (props.decoderTab === "modbus" && props.modbusRows && props.decoderModbus) {
+      const chIdx = visible.findIndex(c => c.id === props.decoderModbus?.ch);
+      if (chIdx >= 0) {
+        const color = visible[chIdx]?.color || CHANNEL_COLORS[props.decoderModbus.ch];
+        props.modbusRows.forEach(r => {
+          drawBubble(r.startSample, chIdx, `A${r.addr} F${r.func.toString(16).padStart(2, "0").toUpperCase()}`, color);
         });
       }
     }

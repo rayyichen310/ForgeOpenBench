@@ -4,8 +4,18 @@ import {
   decodeUartChunk,
   decodeI2C,
   decodeSPI,
+  decodeCAN,
+  decodeOneWire,
+  decodeSWD,
+  decodeJTAG,
+  decodeModbus,
   generateLaTestPattern,
   makeFakeUartSignal,
+  generateCanFrame,
+  generateOneWireFrame,
+  generateSwdFrame,
+  generateJtagFrame,
+  generateModbusFrame,
   MAX_TICKER,
   inferDecoderDefaults,
   autoDetectLaProtocol,
@@ -413,6 +423,225 @@ describe("autoDetectLaProtocol", () => {
     const samples = generateLaTestPattern(1_000_000, 1);
     const result = autoDetectLaProtocol(cap(samples, 1_000_000));
     expect(result.score).toBeGreaterThan(0);
-    expect(result.tab).toMatch(/^(uart|i2c|spi)$/);
+    expect(result.tab).toMatch(/^(uart|i2c|spi|can|onewire|swd|jtag|modbus)$/);
+  });
+  it("returns a positive score for a CAN signal", () => {
+    const samples = generateCanFrame(1_000_000, 500_000, 3, 0x123, [0xDE, 0xAD, 0xBE, 0xEF]);
+    const result = autoDetectLaProtocol({ ...cap(samples, 1_000_000), channelLabels: ["", "", "", "CAN"] });
+    expect(result.score).toBeGreaterThan(0);
+    expect(result.tab).toBe("can");
+    expect(result.can).toBeDefined();
+  });
+  it("returns a positive score for a 1-Wire signal", () => {
+    const samples = generateOneWireFrame(1_000_000, 2, [0x33, 0x00]);
+    const result = autoDetectLaProtocol({ ...cap(samples, 1_000_000), channelLabels: ["", "", "1W"] });
+    expect(result.score).toBeGreaterThan(0);
+    expect(result.tab).toBe("onewire");
+    expect(result.onewire).toBeDefined();
+  });
+  it("returns a positive score for a SWD signal", () => {
+    const samples = generateSwdFrame(1_000_000, 1, 0, [{ apnDp: 0, read: true, addr: 0x0, data: 0x1BA01477 }]);
+    const result = autoDetectLaProtocol({ ...cap(samples, 1_000_000), channelLabels: ["SWCLK", "SWDIO"] });
+    expect(result.score).toBeGreaterThan(0);
+    expect(result.tab).toBe("swd");
+    expect(result.swd).toBeDefined();
+  });
+  it("returns a positive score for a JTAG signal", () => {
+    const samples = generateJtagFrame(1_000_000, 0, 1, 2, 3, [{ register: "DR", tdi: 0xA5, tdo: 0x12, bits: 8 }]);
+    const result = autoDetectLaProtocol({ ...cap(samples, 1_000_000), channelLabels: ["TCK", "TMS", "TDI", "TDO"] });
+    expect(result.score).toBeGreaterThan(0);
+    expect(result.tab).toBe("jtag");
+    expect(result.jtag).toBeDefined();
+  });
+  it("returns a positive score for a Modbus signal", () => {
+    const samples = generateModbusFrame(1_000_000, 2, 9600, 1, 0x03, [0x00, 0x00, 0x00, 0x0A], "even");
+    const result = autoDetectLaProtocol({ ...cap(samples, 1_000_000), channelLabels: ["", "", "RS485"] });
+    expect(result.score).toBeGreaterThan(0);
+    expect(result.tab).toBe("modbus");
+    expect(result.modbus).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// decodeCAN
+// ---------------------------------------------------------------------------
+
+describe("decodeCAN", () => {
+  it("decodes a standard 11-bit data frame", () => {
+    const samples = generateCanFrame(1_000_000, 500_000, 0, 0x123, [0xDE, 0xAD]);
+    const frames = decodeCAN(samples, 1_000_000, 0, 500_000);
+    expect(frames).toHaveLength(1);
+    expect(frames[0].id).toBe(0x123);
+    expect(frames[0].dlc).toBe(2);
+    expect(frames[0].data).toEqual([0xDE, 0xAD]);
+    expect(frames[0].extended).toBe(false);
+    expect(frames[0].rtr).toBe(false);
+  });
+
+  it("decodes on a non-zero channel", () => {
+    const samples = generateCanFrame(1_000_000, 250_000, 5, 0x7FF, [0x01]);
+    const frames = decodeCAN(samples, 1_000_000, 5, 250_000);
+    expect(frames).toHaveLength(1);
+    expect(frames[0].id).toBe(0x7FF);
+  });
+
+  it("decodes multiple consecutive frames", () => {
+    const f1 = generateCanFrame(1_000_000, 500_000, 0, 0x100, [0x01]);
+    const f2 = generateCanFrame(1_000_000, 500_000, 0, 0x101, [0x02]);
+    const combined = new Uint8Array(f1.length + f2.length);
+    combined.set(f1, 0);
+    combined.set(f2, f1.length);
+    const frames = decodeCAN(combined, 1_000_000, 0, 500_000);
+    expect(frames).toHaveLength(2);
+    expect(frames.map(f => f.id)).toEqual([0x100, 0x101]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// decodeOneWire
+// ---------------------------------------------------------------------------
+
+describe("decodeOneWire", () => {
+  const RATE = 1_000_000;
+
+  it("detects reset and presence pulses", () => {
+    const samples = generateOneWireFrame(RATE, 0, []);
+    const frames = decodeOneWire(samples, RATE, 0);
+    expect(frames.some(f => f.type === "reset")).toBe(true);
+    expect(frames.some(f => f.type === "presence")).toBe(true);
+  });
+
+  it("decodes bytes after reset/presence", () => {
+    const samples = generateOneWireFrame(RATE, 0, [0x33, 0x00]);
+    const frames = decodeOneWire(samples, RATE, 0);
+    const bytes = frames.filter(f => f.type === "byte");
+    expect(bytes.map(f => f.value)).toEqual([0x33, 0x00]);
+  });
+
+  it("decodes on a non-zero channel", () => {
+    const samples = generateOneWireFrame(RATE, 7, [0xAA]);
+    const frames = decodeOneWire(samples, RATE, 7);
+    const bytes = frames.filter(f => f.type === "byte");
+    expect(bytes).toHaveLength(1);
+    expect(bytes[0].value).toBe(0xAA);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// decodeSWD
+// ---------------------------------------------------------------------------
+
+describe("decodeSWD", () => {
+  const RATE = 1_000_000;
+
+  it("detects reset and switching sequence", () => {
+    const samples = generateSwdFrame(RATE, 1, 0, []);
+    const frames = decodeSWD(samples, RATE, 1, 0);
+    expect(frames.some(f => f.type === "reset")).toBe(true);
+  });
+
+  it("decodes a read DP IDR request and data", () => {
+    const samples = generateSwdFrame(RATE, 1, 0, [{ apnDp: 0, read: true, addr: 0x0, data: 0x1BA01477 }]);
+    const frames = decodeSWD(samples, RATE, 1, 0);
+    const req = frames.find(f => f.type === "request");
+    expect(req).toBeDefined();
+    expect(req!.read).toBe(true);
+    expect(req!.apnDp).toBe(0);
+    expect(req!.addr).toBe(0x0);
+    const data = frames.find(f => f.type === "data");
+    expect(data).toBeDefined();
+    expect(data!.data).toBe(0x1BA01477);
+    expect(data!.ok).toBe(true);
+  });
+
+  it("decodes on different channels", () => {
+    const samples = generateSwdFrame(RATE, 7, 3, [{ apnDp: 1, read: false, addr: 0x4, data: 0xDEADBEEF }]);
+    const frames = decodeSWD(samples, RATE, 7, 3);
+    const req = frames.find(f => f.type === "request");
+    expect(req).toBeDefined();
+    expect(req!.apnDp).toBe(1);
+    expect(req!.read).toBe(false);
+    const data = frames.find(f => f.type === "data");
+    expect(data?.data).toBe(0xDEADBEEF);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// decodeJTAG
+// ---------------------------------------------------------------------------
+
+describe("decodeJTAG", () => {
+  const RATE = 1_000_000;
+
+  it("detects reset and run-test/idle", () => {
+    const samples = generateJtagFrame(RATE, 0, 1, 2, 3, []);
+    const frames = decodeJTAG(samples, RATE, 0, 1, 2, 3);
+    expect(frames.some(f => f.type === "reset")).toBe(true);
+    expect(frames.some(f => f.type === "state" && f.state === "Run-Test/Idle")).toBe(true);
+  });
+
+  it("decodes a DR scan with TDI and TDO data", () => {
+    const samples = generateJtagFrame(RATE, 0, 1, 2, 3, [{ register: "DR", tdi: 0xA5, tdo: 0x12, bits: 8 }]);
+    const frames = decodeJTAG(samples, RATE, 0, 1, 2, 3);
+    const shift = frames.find(f => f.type === "shift");
+    expect(shift).toBeDefined();
+    expect(shift!.register).toBe("DR");
+    expect(shift!.tdi).toBe(0xA5);
+    expect(shift!.tdo).toBe(0x12);
+    expect(shift!.bits).toBe(8);
+  });
+
+  it("decodes an IR scan and multiple DR scans", () => {
+    const samples = generateJtagFrame(RATE, 0, 1, 2, 3, [
+      { register: "IR", tdi: 0x5, tdo: 0x0, bits: 4 },
+      { register: "DR", tdi: 0x1234, tdo: 0x4321, bits: 16 },
+    ]);
+    const frames = decodeJTAG(samples, RATE, 0, 1, 2, 3);
+    const shifts = frames.filter(f => f.type === "shift");
+    expect(shifts).toHaveLength(2);
+    expect(shifts[0].register).toBe("IR");
+    expect(shifts[0].tdi).toBe(0x5);
+    expect(shifts[1].register).toBe("DR");
+    expect(shifts[1].tdi).toBe(0x1234);
+    expect(shifts[1].tdo).toBe(0x4321);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// decodeModbus
+// ---------------------------------------------------------------------------
+
+describe("decodeModbus", () => {
+  const RATE = 1_000_000;
+  const BAUD = 9600;
+
+  it("decodes a read holding registers request", () => {
+    const samples = generateModbusFrame(RATE, 0, BAUD, 1, 0x03, [0x00, 0x00, 0x00, 0x0A], "even");
+    const frames = decodeModbus(samples, RATE, 0, BAUD, "even");
+    expect(frames).toHaveLength(1);
+    expect(frames[0].addr).toBe(1);
+    expect(frames[0].func).toBe(0x03);
+    expect(frames[0].data).toEqual([0x00, 0x00, 0x00, 0x0A]);
+    expect(frames[0].crcOk).toBe(true);
+  });
+
+  it("decodes on a different channel with no parity", () => {
+    const samples = generateModbusFrame(RATE, 3, BAUD, 5, 0x10, [0x00, 0x01, 0x02, 0x00, 0x01, 0x02, 0xAB], "none");
+    const frames = decodeModbus(samples, RATE, 3, BAUD, "none");
+    expect(frames).toHaveLength(1);
+    expect(frames[0].addr).toBe(5);
+    expect(frames[0].func).toBe(0x10);
+    expect(frames[0].crcOk).toBe(true);
+  });
+
+  it("decodes an exception response", () => {
+    const samples = generateModbusFrame(RATE, 0, BAUD, 2, 0x83, [0x02], "even");
+    const frames = decodeModbus(samples, RATE, 0, BAUD, "even");
+    expect(frames).toHaveLength(1);
+    expect(frames[0].addr).toBe(2);
+    expect(frames[0].type).toBe("error");
+    expect(frames[0].func).toBe(0x03);
+    expect(frames[0].data).toEqual([0x02]);
+    expect(frames[0].crcOk).toBe(true);
   });
 });

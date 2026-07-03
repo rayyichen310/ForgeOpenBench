@@ -3,7 +3,7 @@ import { readFile } from "fs/promises";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { parseSigrokSr } from "./sigrokSrParser";
-import { decodeUartChunk, decodeI2C, decodeSPI, inferDecoderDefaults, autoDetectLaProtocol } from "./laDecoders";
+import { decodeUartChunk, decodeI2C, decodeSPI, decodeSWD, decodeJTAG, decodeModbus, inferDecoderDefaults, autoDetectLaProtocol } from "./laDecoders";
 
 const FIXTURE_DIR = join(dirname(fileURLToPath(import.meta.url)), "test-fixtures", "sigrok");
 
@@ -69,5 +69,39 @@ describe("sigrok-dumps fixtures", () => {
     const spiResult = autoDetectLaProtocol(spiCap);
     expect(spiResult.tab).toBe("spi");
     expect(spiResult.spi?.sck).toBe(0);
+  });
+
+  it("decodes real SWD sigrok-dumps fixture", async () => {
+    const cap = await parseSigrokSr(await loadFixture("init_write_0xabbabeeb.sr"));
+    expect(cap.sampleRate).toBe(8_000_000);
+    expect(cap.width).toBe(8);
+    expect(cap.samples.length).toBeGreaterThan(0);
+    const cfg = inferDecoderDefaults(cap);
+    expect(cfg.tab).toBe("swd");
+    const frames = decodeSWD(cap.samples, cap.sampleRate, cfg.swd.swdio, cfg.swd.swclk);
+    expect(frames.filter(f => f.type === "data").length).toBeGreaterThan(0);
+    expect(frames.filter(f => f.type === "request").length).toBeGreaterThan(0);
+  });
+
+  it("decodes real JTAG sigrok-dumps fixture", async () => {
+    const cap = await parseSigrokSr(await loadFixture("keil_mcb2140_irscan_drscan.sr"));
+    expect(cap.sampleRate).toBe(4_000_000);
+    expect(cap.width).toBe(8);
+    expect(cap.samples.length).toBeGreaterThan(0);
+    const cfg = inferDecoderDefaults(cap);
+    expect(cfg.tab).toBe("jtag");
+    const frames = decodeJTAG(cap.samples, cap.sampleRate, cfg.jtag.tck, cfg.jtag.tms, cfg.jtag.tdi, cfg.jtag.tdo);
+    expect(frames.filter(f => f.type === "shift").length).toBeGreaterThan(0);
+  });
+
+  it("decodes real Modbus RTU sigrok-dumps fixture", async () => {
+    const cap = await parseSigrokSr(await loadFixture("wizmodbus.sr"));
+    expect(cap.sampleRate).toBe(1_000_000);
+    expect(cap.width).toBe(8);
+    expect(cap.samples.length).toBeGreaterThan(0);
+    // The fixture labels the TX line; the Modbus decoder expects the bus signal.
+    const frames = decodeModbus(cap.samples, cap.sampleRate, 3, 9600, "none");
+    expect(frames.length).toBeGreaterThan(0);
+    expect(frames.every(f => f.crcOk)).toBe(true);
   });
 });
