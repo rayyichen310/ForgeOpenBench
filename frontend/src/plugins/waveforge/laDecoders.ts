@@ -76,7 +76,9 @@ export function decodeUartChunk(
       const error = stopBit !== 1 || parityOk === false;
       const absSample = baseSample + fs;
       rows.push({ ts: absSample / sampleRate, byte: v, sample: absSample, error, parityOk });
-      i = Math.round(fs + (1 + dataBits + parityOffset + stopBits) * spb);
+      // Advance to the middle of the stop bit, then scan for the next idle -> start edge.
+      // This avoids landing exactly on the next start bit when spb is non-integer.
+      i = Math.round(fs + (dataBits + parityOffset + 1 + stopBits / 2) * spb);
     } else { i++; }
   }
   return rows;

@@ -128,4 +128,34 @@ total samples=2
     expect(cap.width).toBe(16);
     expect(cap.samples).toEqual(new Uint8Array([0x01, 0x02, 0x03, 0x04]));
   });
+
+  it("parses samplerate with kHz/MHz suffix", async () => {
+    const metadata = `[sigrok]
+samplerate=625 kHz
+unitsize=1
+capturefile=logic-1
+`;
+    const zip = buildZip([
+      { name: "metadata", data: new TextEncoder().encode(metadata) },
+      { name: "logic-1", data: new Uint8Array([0xff]) },
+    ]);
+    const cap = await parseSigrokSr(zip);
+    expect(cap.sampleRate).toBe(625_000);
+  });
+
+  it("concatenates chunked logic-1 files", async () => {
+    const metadata = `[sigrok]
+samplerate=1000000
+unitsize=1
+capturefile=logic-1
+`;
+    const zip = buildZip([
+      { name: "metadata", data: new TextEncoder().encode(metadata) },
+      { name: "logic-1", data: new Uint8Array([0x01, 0x02]) },
+      { name: "logic-1-1", data: new Uint8Array([0x03, 0x04]) },
+      { name: "logic-1-2", data: new Uint8Array([0x05]) },
+    ]);
+    const cap = await parseSigrokSr(zip);
+    expect(cap.samples).toEqual(new Uint8Array([0x01, 0x02, 0x03, 0x04, 0x05]));
+  });
 });
