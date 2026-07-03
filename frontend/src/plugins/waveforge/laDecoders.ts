@@ -429,7 +429,7 @@ export function decodeUartChunk(
         parityOffset = 1;
         const parBit = at(dataBits + 1);
         const ones = v.toString(2).split("").filter(c => c === "1").length;
-        const expectedParity = parity === "even" ? (ones % 2 === 0 ? 1 : 0) : (ones % 2 === 1 ? 1 : 0);
+        const expectedParity = parity === "even" ? (ones % 2 === 1 ? 1 : 0) : (ones % 2 === 0 ? 1 : 0);
         parityOk = parBit === expectedParity;
       }
 
@@ -466,7 +466,7 @@ export function makeFakeUartSignal(
     for (let b = 0; b < 8; b++) pushBit((value >> b) & 1); // LSB first
     if (parity !== "none") {
       const ones = value.toString(2).split("").filter(c => c === "1").length;
-      pushBit(parity === "even" ? (ones % 2 === 0 ? 1 : 0) : (ones % 2 === 1 ? 1 : 0));
+      pushBit(parity === "even" ? (ones % 2 === 1 ? 1 : 0) : (ones % 2 === 0 ? 1 : 0));
     }
     pushBit(1, stopBits); // stop bit(s)
     pushBit(1); // inter-byte gap
@@ -1283,14 +1283,15 @@ export function decodeJTAG(
   // If we ended mid-shift, emit remaining data.
   if (shiftRegister && shiftBits > 0) {
     const last = edges[edges.length - 1];
+    const mask = shiftBits >= 32 ? 0xffffffff : (1 << shiftBits) - 1;
     frames.push({
       startSample: shiftStart,
       endSample: last.s,
       ts: shiftStart / sampleRate,
       type: "shift",
       register: shiftRegister,
-      tdi: shiftTdi,
-      tdo: shiftTdo,
+      tdi: shiftTdi & mask,
+      tdo: shiftTdo & mask,
       bits: shiftBits,
     });
   }
@@ -1412,7 +1413,7 @@ export function decodeModbus(
 
 function parseModbusFrame(rows: TickerRow[], sampleRate: number): ModbusFrame | null {
   const bytes = rows.map(r => r.byte);
-  if (bytes.length < 2) return null;
+  if (bytes.length < 4) return null;
   const addr = bytes[0];
   const func = bytes[1];
   const payload = bytes.slice(0, -2);
@@ -1456,7 +1457,7 @@ export function generateModbusFrame(
     for (let i = 0; i < 8; i++) pushBit((b >> i) & 1, spb);
     if (parity !== "none") {
       const ones = b.toString(2).split("").filter(c => c === "1").length;
-      const parBit = parity === "even" ? (ones % 2 === 0 ? 1 : 0) : (ones % 2 === 1 ? 1 : 0);
+      const parBit = parity === "even" ? (ones % 2 === 1 ? 1 : 0) : (ones % 2 === 0 ? 1 : 0);
       pushBit(parBit, spb);
     }
     pushBit(1, spb); // stop
