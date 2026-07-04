@@ -3,10 +3,15 @@
 ## [0.9.1-rc24] — 2026-07-04
 
 ### Added
-- **WaveForge LA — canvas packet overlays**
+- **WaveForge LA — canvas packet overlays and synchronized ticket strip**
   - Decoded protocol data is now rendered as structured packet bars directly on the waveform for UART, I2C, SPI, CAN, 1-Wire, SWD, JTAG, and Modbus.
   - Error packets (NACK, parity, CRC) are highlighted in red.
   - Hovering a packet shows a tooltip; clicking a packet centers and zooms the viewport onto that event.
+  - The bottom decoder pane is now a horizontal ticket strip: decoded events appear as pills with gaps proportional to time, and click a pill to center the waveform.
+- **WaveForge LA — ticket strip refinements**
+  - Pill minimum width is now clock-aware: decoders measure the underlying bit period (SCL, SCK, UART/CAN bit samples) and pills are guaranteed at least 2 bit periods wide when zoomed in, with a 25 ms fallback for protocols without a measured clock.
+  - SPI pills now show both MOSI and MISO values.
+  - The Pattern test capture now opens auto-zoomed to the active data region instead of the full 1-second view.
 
 ## [0.9.1-rc23] — 2026-07-04
 

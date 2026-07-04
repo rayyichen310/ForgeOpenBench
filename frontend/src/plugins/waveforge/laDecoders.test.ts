@@ -323,50 +323,58 @@ describe("generateLaTestPattern", () => {
   // clean for direct bit-level verification.
   const RATE = 115200 * 8;
   const bitTime = 8;
-  // One unscaled copy of the UART pattern is 320 samples:
-  // 3 bytes (80 each) + 80 trailing idle. The generator does NOT add leading idle.
-  const durationS = 320 / RATE;
-  const pattern = generateLaTestPattern(RATE, durationS);
+  // Bursts are placed sequentially at the start: UART, then I2C, then SPI.
+  // UART = 40 bitTimes, I2C = 121 bitTimes, SPI = 35 bitTimes.
+  const durationS = (196 * bitTime) / RATE;
+  const patternResult = generateLaTestPattern(RATE, durationS);
+  const pattern = patternResult.samples;
+  const uartOffset = 0;
+  const i2cOffset = 40 * bitTime;
+  const spiOffset = i2cOffset + 121 * bitTime;
 
-  it("returns the expected buffer length", () => {
+  it("returns the expected buffer length and positive dataEndSample", () => {
     expect(pattern.length).toBe(Math.floor(RATE * durationS));
+    expect(patternResult.dataEndSample).toBeGreaterThan(0);
   });
 
   it("UART pattern on D0 starts with start bit and LSB-first data", () => {
     // D0 starts immediately with the start bit of 0x48 (LSB-first).
     // Each bit is 8 samples; start bit is samples 0-7.
-    expect(pattern[0] & 1).toBe(0); // start bit
-    expect(pattern[bitTime * 1] & 1).toBe(0); // bit 0 of 0x48 = 0
-    expect(pattern[bitTime * 2] & 1).toBe(0); // bit 1 = 0
-    expect(pattern[bitTime * 3] & 1).toBe(0); // bit 2 = 0
-    expect(pattern[bitTime * 4] & 1).toBe(1); // bit 3 = 1
-    expect(pattern[bitTime * 5] & 1).toBe(0); // bit 4 = 0
-    expect(pattern[bitTime * 6] & 1).toBe(0); // bit 5 = 0
-    expect(pattern[bitTime * 7] & 1).toBe(1); // bit 6 = 1
-    expect(pattern[bitTime * 8] & 1).toBe(0); // bit 7 = 0
-    expect(pattern[bitTime * 9] & 1).toBe(1); // stop bit
+    const base = uartOffset;
+    expect(pattern[base + 0] & 1).toBe(0); // start bit
+    expect(pattern[base + bitTime * 1] & 1).toBe(0); // bit 0 of 0x48 = 0
+    expect(pattern[base + bitTime * 2] & 1).toBe(0); // bit 1 = 0
+    expect(pattern[base + bitTime * 3] & 1).toBe(0); // bit 2 = 0
+    expect(pattern[base + bitTime * 4] & 1).toBe(1); // bit 3 = 1
+    expect(pattern[base + bitTime * 5] & 1).toBe(0); // bit 4 = 0
+    expect(pattern[base + bitTime * 6] & 1).toBe(0); // bit 5 = 0
+    expect(pattern[base + bitTime * 7] & 1).toBe(1); // bit 6 = 1
+    expect(pattern[base + bitTime * 8] & 1).toBe(0); // bit 7 = 0
+    expect(pattern[base + bitTime * 9] & 1).toBe(1); // stop bit
   });
 
   it("I2C pattern on D1/D2 shows idle, START, and address byte", () => {
-    // SCL on D1, SDA on D2. Generator starts with 4*bitTime idle, then START.
-    expect((pattern[0] >> 1) & 1).toBe(1); // SCL high
-    expect((pattern[0] >> 2) & 1).toBe(1); // SDA high
-    // START: SCL high, SDA falls (sample 32→40)
-    const startIdx = bitTime * 4;
+    // SCL on D1, SDA on D2. I2C burst starts with 4*bitTime idle, then START.
+    const base = i2cOffset;
+    expect((pattern[base] >> 1) & 1).toBe(1); // SCL high
+    expect((pattern[base] >> 2) & 1).toBe(1); // SDA high
+    // START: SCL high, SDA falls (4→5 bitTimes into the I2C burst)
+    const startIdx = base + bitTime * 4;
     expect((pattern[startIdx] >> 1) & 1).toBe(1); // SCL high
     expect((pattern[startIdx] >> 2) & 1).toBe(1); // SDA high before start
     expect((pattern[startIdx + bitTime] >> 2) & 1).toBe(0); // SDA falls on START
-    // First bit of address byte 0xA0 is MSB = 1, presented at sample 48
-    const addrBit0Idx = bitTime * 6;
+    // First bit of address byte 0xA0 is MSB = 1, presented at 6 bitTimes into the burst
+    const addrBit0Idx = base + bitTime * 6;
     expect((pattern[addrBit0Idx] >> 2) & 1).toBe(1);
   });
 
   it("SPI pattern on D3-D6 shows CS active, clock edges, and MOSI data", () => {
     // D3=MOSI, D4=MISO, D5=SCK, D6=CS. CS active low after 2*bitTime idle.
-    const csActiveIdx = bitTime * 2;
+    const base = spiOffset;
+    const csActiveIdx = base + bitTime * 2;
     expect((pattern[csActiveIdx] >> 6) & 1).toBe(0); // CS low
-    // First bit of 0xA5 MOSI is MSB = 1, presented on first SCK low phase (sample 24)
-    const firstBitIdx = bitTime * 3;
+    // First bit of 0xA5 MOSI is MSB = 1, presented on first SCK low phase (3 bitTimes into the SPI burst)
+    const firstBitIdx = base + bitTime * 3;
     expect((pattern[firstBitIdx] >> 3) & 1).toBe(1);
     // First bit of 0x12 MISO is MSB = 0
     expect((pattern[firstBitIdx] >> 4) & 1).toBe(0);
@@ -429,7 +437,7 @@ describe("autoDetectLaProtocol", () => {
     // Small signals may tie with UART; real I2C fixtures verify protocol detection.
   });
   it("returns a positive score for the synthetic pattern", () => {
-    const samples = generateLaTestPattern(1_000_000, 1);
+    const samples = generateLaTestPattern(1_000_000, 1).samples;
     const result = autoDetectLaProtocol(cap(samples, 1_000_000));
     expect(result.score).toBeGreaterThan(0);
     expect(result.tab).toMatch(/^(uart|i2c|spi|can|onewire|swd|jtag|modbus)$/);

@@ -789,7 +789,7 @@ export function WaveformLaLegacyView({ transport, isActive, connected, capture }
     liveWidthRef.current = 8;
     setSampleRate(rate);
     setWidth(8);
-    frozenBufRef.current = generateLaTestPattern(rate, 1);
+    frozenBufRef.current = generateLaTestPattern(rate, 1).samples;
     setTickerRows([]);
     setRunning(false);
     setElapsedS(0);

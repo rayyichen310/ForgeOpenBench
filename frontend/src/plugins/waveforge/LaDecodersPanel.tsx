@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
-import { decodeUartChunk, decodeI2C, decodeSPI, decodeCAN, decodeOneWire, decodeSWD, decodeJTAG, decodeModbus, autoDetectLaProtocol, MAX_TICKER } from "./laDecoders";
-import type { DecoderTab, LaCapture, AutoDetectResult } from "./laDecoders";
-import { DEFAULT_BAUDS } from "./laChannelConfig";
+import { autoDetectLaProtocol } from "./laDecoders";
+import type { DecoderTab, LaCapture, AutoDetectResult, TickerRow, I2CFrame, SPIFrame, CANFrame, OneWireFrame, SWDFrame, JTAGFrame, ModbusFrame } from "./laDecoders";
+import { DEFAULT_BAUDS, DEFAULT_LABEL_WIDTH } from "./laChannelConfig";
 
 interface UartConfig { baud: number; ch: number; }
 interface I2cConfig { scl: number; sda: number; addrBits: 7 | 8; }
@@ -16,7 +16,10 @@ interface Props {
   frozenBuf?: Uint8Array | null;
   sampleRate?: number;
   capture?: LaCapture | null;
+  panSample?: number;
+  zoomSamples?: number | null;
   running: boolean;
+  tab: DecoderTab;
   defaultUart?: UartConfig;
   defaultI2c?: I2cConfig;
   defaultSpi?: SpiConfig;
@@ -25,19 +28,21 @@ interface Props {
   defaultSwd?: SwdConfig;
   defaultJtag?: JtagConfig;
   defaultModbus?: ModbusConfig;
-  suggestedTab?: DecoderTab;
+  uartRows?: TickerRow[];
+  i2cRows?: I2CFrame[];
+  spiRows?: SPIFrame[];
+  canRows?: CANFrame[];
+  oneWireRows?: OneWireFrame[];
+  swdRows?: SWDFrame[];
+  jtagRows?: JTAGFrame[];
+  modbusRows?: ModbusFrame[];
   onChange?: (state: { tab: DecoderTab; uart: UartConfig; i2c: I2cConfig; spi: SpiConfig; can: CanConfig; onewire: OneWireConfig; swd: SwdConfig; jtag: JtagConfig; modbus: ModbusConfig }) => void;
+  onPacketClick?: (sample: number) => void;
 }
 
-function ascii(b: number) {
-  return b >= 0x20 && b < 0x7f ? String.fromCharCode(b) : ".";
-}
+interface TicketItem { sample: number; endSample: number; label: string; error: boolean; bitSamples?: number; }
 
-function fmt(ts: number) {
-  return ts < 1e-3 ? `${(ts * 1e6).toFixed(0)}µs` : `${(ts * 1e3).toFixed(2)}ms`;
-}
-
-export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defaultUart, defaultI2c, defaultSpi, defaultCan, defaultOneWire, defaultSwd, defaultJtag, defaultModbus, suggestedTab, onChange }: Props) {
+export function LaDecodersPanel({ frozenBuf, sampleRate, capture, panSample, zoomSamples, running, tab, defaultUart, defaultI2c, defaultSpi, defaultCan, defaultOneWire, defaultSwd, defaultJtag, defaultModbus, uartRows, i2cRows, spiRows, canRows, oneWireRows, swdRows, jtagRows, modbusRows, onChange, onPacketClick }: Props) {
   const [debouncedCapture, setDebouncedCapture] = useState(capture);
   useEffect(() => {
     const id = setTimeout(() => setDebouncedCapture(capture), 150);
@@ -45,7 +50,6 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
   }, [capture]);
   const effectiveBuf = debouncedCapture?.samples ?? frozenBuf ?? null;
   const effectiveRate = debouncedCapture?.sampleRate ?? sampleRate ?? 0;
-  const [tab, setTab] = useState<DecoderTab>(suggestedTab ?? "uart");
   const [uart, setUart] = useState<UartConfig>(defaultUart ?? { baud: 115200, ch: 0 });
   const [i2c, setI2c] = useState<I2cConfig>(defaultI2c ?? { scl: 1, sda: 2, addrBits: 7 });
   const [spi, setSpi] = useState<SpiConfig>(defaultSpi ?? { mosi: 3, miso: 4, sck: 5, cs: 6, mode: 0, bits: 8, csActiveLow: true });
@@ -56,9 +60,6 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
   const [modbus, setModbus] = useState<ModbusConfig>(defaultModbus ?? { ch: 0, baud: 9600, parity: "even" });
   const [lastAutoDetect, setLastAutoDetect] = useState<AutoDetectResult | null>(null);
 
-  useEffect(() => {
-    if (suggestedTab) setTab(suggestedTab);
-  }, [suggestedTab]);
   useEffect(() => { if (defaultUart) setUart(defaultUart); }, [defaultUart]);
   useEffect(() => { if (defaultI2c) setI2c(defaultI2c); }, [defaultI2c]);
   useEffect(() => { if (defaultSpi) setSpi(defaultSpi); }, [defaultSpi]);
@@ -67,63 +68,90 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
   useEffect(() => { if (defaultSwd) setSwd(defaultSwd); }, [defaultSwd]);
   useEffect(() => { if (defaultJtag) setJtag(defaultJtag); }, [defaultJtag]);
   useEffect(() => { if (defaultModbus) setModbus(defaultModbus); }, [defaultModbus]);
-  useEffect(() => { onChange?.({ tab, uart, i2c, spi, can, onewire, swd, jtag, modbus }); }, [tab, uart, i2c, spi, can, onewire, swd, jtag, modbus, onChange]);
+
+  const handleChange = useCallback((patch: Partial<{ tab: DecoderTab; uart: UartConfig; i2c: I2cConfig; spi: SpiConfig; can: CanConfig; onewire: OneWireConfig; swd: SwdConfig; jtag: JtagConfig; modbus: ModbusConfig }>) => {
+    onChange?.({ tab: patch.tab ?? tab, uart: patch.uart ?? uart, i2c: patch.i2c ?? i2c, spi: patch.spi ?? spi, can: patch.can ?? can, onewire: patch.onewire ?? onewire, swd: patch.swd ?? swd, jtag: patch.jtag ?? jtag, modbus: patch.modbus ?? modbus });
+  }, [onChange, tab, uart, i2c, spi, can, onewire, swd, jtag, modbus]);
 
   const handleAutoDetect = useCallback(() => {
     if (!effectiveBuf || effectiveBuf.length === 0 || effectiveRate <= 0) return;
     const cap = capture ?? { samples: effectiveBuf, sampleRate: effectiveRate, width: 8, source: "live", importedAt: new Date().toISOString() };
     const result = autoDetectLaProtocol(cap);
     setLastAutoDetect(result);
-    setTab(result.tab);
-    if (result.uart) setUart(result.uart);
-    if (result.i2c) setI2c(result.i2c);
-    if (result.spi) setSpi(s => ({ ...result.spi!, csActiveLow: s.csActiveLow }));
-    if (result.can) setCan(result.can);
-    if (result.onewire) setOneWire(result.onewire);
-    if (result.swd) setSwd(result.swd);
-    if (result.jtag) setJtag(result.jtag);
-    if (result.modbus) setModbus(result.modbus);
-  }, [effectiveBuf, effectiveRate, capture]);
+    const patch: Partial<{ tab: DecoderTab; uart: UartConfig; i2c: I2cConfig; spi: SpiConfig; can: CanConfig; onewire: OneWireConfig; swd: SwdConfig; jtag: JtagConfig; modbus: ModbusConfig }> = { tab: result.tab };
+    if (result.uart) patch.uart = result.uart;
+    if (result.i2c) patch.i2c = result.i2c;
+    if (result.spi) patch.spi = { ...result.spi, csActiveLow: spi.csActiveLow };
+    if (result.can) patch.can = result.can;
+    if (result.onewire) patch.onewire = result.onewire;
+    if (result.swd) patch.swd = result.swd;
+    if (result.jtag) patch.jtag = result.jtag;
+    if (result.modbus) patch.modbus = result.modbus;
+    handleChange(patch);
+  }, [effectiveBuf, effectiveRate, capture, handleChange, spi.csActiveLow]);
 
-  const uartRows = useMemo(() => {
-    if (!effectiveBuf || effectiveBuf.length === 0) return [];
-    return decodeUartChunk(effectiveBuf, effectiveRate, uart.baud, uart.ch).slice(0, MAX_TICKER);
-  }, [effectiveBuf, effectiveRate, uart]);
-
-  const i2cRows = useMemo(() => {
-    if (!effectiveBuf || effectiveBuf.length === 0) return [];
-    return decodeI2C(effectiveBuf, effectiveRate, i2c.scl, i2c.sda).slice(0, MAX_TICKER);
-  }, [effectiveBuf, effectiveRate, i2c]);
-
-  const spiRows = useMemo(() => {
-    if (!effectiveBuf || effectiveBuf.length === 0) return [];
-    return decodeSPI(effectiveBuf, effectiveRate, spi.mosi, spi.miso, spi.sck, spi.cs, spi.mode, spi.bits, spi.csActiveLow).slice(0, MAX_TICKER);
-  }, [effectiveBuf, effectiveRate, spi]);
-
-  const canRows = useMemo(() => {
-    if (!effectiveBuf || effectiveBuf.length === 0) return [];
-    return decodeCAN(effectiveBuf, effectiveRate, can.ch, can.baud).slice(0, MAX_TICKER);
-  }, [effectiveBuf, effectiveRate, can]);
-
-  const oneWireRows = useMemo(() => {
-    if (!effectiveBuf || effectiveBuf.length === 0) return [];
-    return decodeOneWire(effectiveBuf, effectiveRate, onewire.ch).slice(0, MAX_TICKER);
-  }, [effectiveBuf, effectiveRate, onewire]);
-
-  const swdRows = useMemo(() => {
-    if (!effectiveBuf || effectiveBuf.length === 0) return [];
-    return decodeSWD(effectiveBuf, effectiveRate, swd.swdio, swd.swclk).slice(0, MAX_TICKER);
-  }, [effectiveBuf, effectiveRate, swd]);
-
-  const jtagRows = useMemo(() => {
-    if (!effectiveBuf || effectiveBuf.length === 0) return [];
-    return decodeJTAG(effectiveBuf, effectiveRate, jtag.tck, jtag.tms, jtag.tdi, jtag.tdo).slice(0, MAX_TICKER);
-  }, [effectiveBuf, effectiveRate, jtag]);
-
-  const modbusRows = useMemo(() => {
-    if (!effectiveBuf || effectiveBuf.length === 0) return [];
-    return decodeModbus(effectiveBuf, effectiveRate, modbus.ch, modbus.baud, modbus.parity).slice(0, MAX_TICKER);
-  }, [effectiveBuf, effectiveRate, modbus]);
+  const stripRows = useMemo<TicketItem[]>(() => {
+    const pan = panSample ?? 0;
+    const bps = (capture?.width ?? 8) === 16 ? 2 : 1;
+    const range = zoomSamples ?? (capture ? Math.floor(capture.samples.length / bps) : 0);
+    const start = pan;
+    const end = pan + range;
+    const items: TicketItem[] = [];
+    const clamp = (s: number) => Math.max(start, Math.min(s, end));
+    if (tab === "uart" && uartRows) {
+      uartRows.forEach(r => items.push({ sample: clamp(r.sample), endSample: clamp(r.endSample), label: `0x${r.byte.toString(16).padStart(2, "0").toUpperCase()}`, error: r.error, bitSamples: r.bitSamples }));
+    } else if (tab === "i2c" && i2cRows) {
+      i2cRows.forEach(r => {
+        let label = "";
+        if (r.type === "start") label = "START";
+        else if (r.type === "repeated-start") label = "R-START";
+        else if (r.type === "stop") label = "STOP";
+        else if (r.type === "byte" && r.addr !== undefined) label = `A${r.addr.toString(16).padStart(2, "0")}${r.rw === "read" ? "R" : "W"}`;
+        else if (r.type === "byte" && r.data !== undefined) label = `0x${r.data.toString(16).padStart(2, "0")}`;
+        else if (r.type === "ack") label = "ACK";
+        else if (r.type === "nack") label = "NACK";
+        items.push({ sample: clamp(r.startSample), endSample: clamp(r.endSample), label, error: r.type === "nack", bitSamples: r.bitSamples });
+      });
+    } else if (tab === "spi" && spiRows) {
+      const digits = 8 / 4;
+      spiRows.forEach(r => {
+        const parts: string[] = [];
+        if (r.mosi !== undefined) parts.push(`M0x${r.mosi.toString(16).padStart(digits, "0").toUpperCase()}`);
+        if (r.miso !== undefined) parts.push(`S0x${r.miso.toString(16).padStart(digits, "0").toUpperCase()}`);
+        const label = parts.join(" ");
+        items.push({ sample: clamp(r.startSample), endSample: clamp(r.endSample), label, error: false, bitSamples: r.bitSamples });
+      });
+    } else if (tab === "can" && canRows) {
+      canRows.forEach(r => items.push({ sample: clamp(r.startSample), endSample: clamp(r.endSample), label: `${r.extended ? "Ext" : "Std"} ID 0x${r.id.toString(16).toUpperCase()}`, error: !!r.error, bitSamples: r.bitSamples }));
+    } else if (tab === "onewire" && oneWireRows) {
+      oneWireRows.forEach(r => {
+        let label = "";
+        if (r.type === "reset") label = "RST";
+        else if (r.type === "presence") label = "PRES";
+        else if (r.type === "byte" && r.value !== undefined) label = `0x${r.value.toString(16).padStart(2, "0").toUpperCase()}`;
+        items.push({ sample: clamp(r.startSample), endSample: clamp(r.endSample), label, error: false, bitSamples: r.bitSamples });
+      });
+    } else if (tab === "swd" && swdRows) {
+      swdRows.forEach(r => {
+        let label = "";
+        if (r.type === "reset") label = "RST";
+        else if (r.type === "request") label = `${r.read ? "R" : "W"}${r.apnDp === 1 ? "AP" : "DP"} 0x${r.addr!.toString(16)}`;
+        else if (r.type === "data" && r.data !== undefined) label = `0x${r.data.toString(16).padStart(8, "0").toUpperCase()}`;
+        items.push({ sample: clamp(r.startSample), endSample: clamp(r.endSample), label, error: r.type === "data" && r.ok === false, bitSamples: r.bitSamples });
+      });
+    } else if (tab === "jtag" && jtagRows) {
+      jtagRows.forEach(r => {
+        let label = "";
+        if (r.type === "reset") label = "RST";
+        else if (r.type === "state") label = r.state ?? "";
+        else if (r.type === "shift" && r.tdi !== undefined) label = `${r.register} 0x${r.tdi.toString(16).padStart(Math.ceil((r.bits ?? 1) / 4), "0").toUpperCase()}`;
+        items.push({ sample: clamp(r.startSample), endSample: clamp(r.endSample), label, error: false, bitSamples: r.bitSamples });
+      });
+    } else if (tab === "modbus" && modbusRows) {
+      modbusRows.forEach(r => items.push({ sample: clamp(r.startSample), endSample: clamp(r.endSample), label: `A${r.addr} F${r.func.toString(16).padStart(2, "0").toUpperCase()}`, error: !r.crcOk, bitSamples: r.bitSamples }));
+    }
+    return items.filter(r => r.endSample > start && r.sample < end);
+  }, [tab, uartRows, i2cRows, spiRows, canRows, oneWireRows, swdRows, jtagRows, modbusRows, panSample, zoomSamples, capture]);
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -132,7 +160,7 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
         {(["uart", "i2c", "spi", "can", "onewire", "swd", "jtag", "modbus"] as DecoderTab[]).map(t => (
           <button
             key={t}
-            onClick={() => setTab(t)}
+            onClick={() => handleChange({ tab: t })} 
             className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide border whitespace-nowrap transition-colors ${tab === t ? "bg-fob-orange text-fob-accent-text border-fob-orange" : "bg-fob-surface border-fob-border hover:bg-fob-border text-fob-text-dim"}`}
           >
             {t}
@@ -154,346 +182,185 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
         </div>
       )}
 
-      {/* UART */}
-      {tab === "uart" && (
-        <div className="flex flex-col flex-1 min-h-0">
-          <div className="flex items-center gap-2 px-2 py-1 bg-fob-surface border-b border-fob-border text-xs shrink-0 flex-wrap">
+      {/* Control bar */}
+      <div className="flex items-center gap-2 px-2 py-1 bg-fob-surface border-b border-fob-border text-xs shrink-0 flex-wrap">
+        {tab === "uart" && (
+          <>
             <span className="text-fob-text-dim">Baud:</span>
-            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5"
-              value={uart.baud} onChange={e => setUart(c => ({ ...c, baud: Number(e.target.value) }))}>
+            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5" value={uart.baud} onChange={e => { const next = { ...uart, baud: Number(e.target.value) }; setUart(next); handleChange({ uart: next }); }}>
               {DEFAULT_BAUDS.map(b => <option key={b} value={b}>{b.toLocaleString()}</option>)}
             </select>
             <span className="text-fob-text-dim">CH:</span>
-            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14"
-              value={uart.ch} onChange={e => setUart(c => ({ ...c, ch: Number(e.target.value) }))}>
+            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14" value={uart.ch} onChange={e => { const next = { ...uart, ch: Number(e.target.value) }; setUart(next); handleChange({ uart: next }); }}>
               {Array.from({ length: 16 }, (_, i) => <option key={i} value={i}>D{i}</option>)}
             </select>
-          </div>
-          <div className="flex-1 overflow-y-auto font-mono text-[11px] px-3 py-2 space-y-1">
-            {uartRows.length === 0 ? (
-              <div className="text-fob-text-dim text-center mt-4">
-                {running ? `Listening on D${uart.ch} @ ${uart.baud.toLocaleString()} baud...` : "Load a capture or pattern to decode UART"}
-              </div>
-            ) : (
-              uartRows.map((r, i) => (
-                <div key={i} className={`flex gap-3 leading-6 ${r.error ? "text-fob-red" : "text-fob-text"}`}>
-                  <span className="text-fob-text-dim w-16 shrink-0">{fmt(r.ts)}</span>
-                  <span className="text-fob-text-dim w-6 shrink-0">D{uart.ch}</span>
-                  <span className="font-bold w-14 shrink-0 text-fob-yellow">0x{r.byte.toString(16).padStart(2, "0").toUpperCase()}</span>
-                  <span className="w-8 shrink-0">{r.byte}</span>
-                  <span className="text-fob-green w-6 shrink-0">{ascii(r.byte)}</span>
-                  {r.error && <span className="text-fob-red">⚠ framing</span>}
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* I2C */}
-      {tab === "i2c" && (
-        <div className="flex flex-col flex-1 min-h-0">
-          <div className="flex items-center gap-2 px-2 py-1 bg-fob-surface border-b border-fob-border text-xs shrink-0 flex-wrap">
+          </>
+        )}
+        {tab === "i2c" && (
+          <>
             <span className="text-fob-text-dim">SCL:</span>
-            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14"
-              value={i2c.scl} onChange={e => setI2c(c => ({ ...c, scl: Number(e.target.value) }))}>
+            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14" value={i2c.scl} onChange={e => { const next = { ...i2c, scl: Number(e.target.value) }; setI2c(next); handleChange({ i2c: next }); }}>
               {Array.from({ length: 16 }, (_, i) => <option key={i} value={i}>D{i}</option>)}
             </select>
             <span className="text-fob-text-dim">SDA:</span>
-            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14"
-              value={i2c.sda} onChange={e => setI2c(c => ({ ...c, sda: Number(e.target.value) }))}>
+            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14" value={i2c.sda} onChange={e => { const next = { ...i2c, sda: Number(e.target.value) }; setI2c(next); handleChange({ i2c: next }); }}>
               {Array.from({ length: 16 }, (_, i) => <option key={i} value={i}>D{i}</option>)}
             </select>
             <span className="text-fob-text-dim">Addr:</span>
-            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5"
-              value={i2c.addrBits} onChange={e => setI2c(c => ({ ...c, addrBits: Number(e.target.value) as 7 | 8 }))}>
+            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5" value={i2c.addrBits} onChange={e => { const next = { ...i2c, addrBits: Number(e.target.value) as 7 | 8 }; setI2c(next); handleChange({ i2c: next }); }}>
               <option value={7}>7-bit</option>
               <option value={8}>8-bit</option>
             </select>
-          </div>
-          <div className="flex-1 overflow-y-auto font-mono text-[11px] px-3 py-2 space-y-1">
-            {i2cRows.length === 0 ? (
-              <div className="text-fob-text-dim text-center mt-4">
-                {running ? "Stop capture to decode I2C" : "No I2C frames — check SCL/SDA channels"}
-              </div>
-            ) : (
-              i2cRows.map((r, i) => (
-                <div key={i} className="flex gap-3 leading-6 text-fob-text">
-                  <span className="text-fob-text-dim w-16 shrink-0">{fmt(r.ts)}</span>
-                  <span className={`w-20 shrink-0 ${r.type === "start" || r.type === "repeated-start" ? "text-fob-green" : r.type === "stop" ? "text-fob-red" : r.type === "ack" ? "text-fob-green" : r.type === "nack" ? "text-fob-red" : "text-fob-yellow"}`}>
-                    {r.type === "byte" && r.addr !== undefined ? `ADDR ${r.addr.toString(16).padStart(2, "0").toUpperCase()}${r.rw === "read" ? "R" : "W"}`
-                      : r.type === "byte" ? `DATA 0x${r.data?.toString(16).padStart(2, "0").toUpperCase() ?? "--"}`
-                      : r.type.toUpperCase()}
-                  </span>
-                  {r.type === "byte" && r.data !== undefined && <span className="text-fob-text-dim">0x{r.data.toString(16).padStart(2, "0").toUpperCase()} {r.data}</span>}
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* SPI */}
-      {tab === "spi" && (
-        <div className="flex flex-col flex-1 min-h-0">
-          <div className="flex items-center gap-2 px-2 py-1 bg-fob-surface border-b border-fob-border text-xs shrink-0 flex-wrap">
+          </>
+        )}
+        {tab === "spi" && (
+          <>
             <span className="text-fob-text-dim">MOSI:</span>
-            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14"
-              value={spi.mosi} onChange={e => setSpi(c => ({ ...c, mosi: Number(e.target.value) }))}>
+            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14" value={spi.mosi} onChange={e => { const next = { ...spi, mosi: Number(e.target.value) }; setSpi(next); handleChange({ spi: next }); }}>
               {Array.from({ length: 16 }, (_, i) => <option key={i} value={i}>D{i}</option>)}
             </select>
             <span className="text-fob-text-dim">MISO:</span>
-            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14"
-              value={spi.miso} onChange={e => setSpi(c => ({ ...c, miso: Number(e.target.value) }))}>
+            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14" value={spi.miso} onChange={e => { const next = { ...spi, miso: Number(e.target.value) }; setSpi(next); handleChange({ spi: next }); }}>
               {Array.from({ length: 16 }, (_, i) => <option key={i} value={i}>D{i}</option>)}
             </select>
             <span className="text-fob-text-dim">SCK:</span>
-            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14"
-              value={spi.sck} onChange={e => setSpi(c => ({ ...c, sck: Number(e.target.value) }))}>
+            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14" value={spi.sck} onChange={e => { const next = { ...spi, sck: Number(e.target.value) }; setSpi(next); handleChange({ spi: next }); }}>
               {Array.from({ length: 16 }, (_, i) => <option key={i} value={i}>D{i}</option>)}
             </select>
             <span className="text-fob-text-dim">CS:</span>
-            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14"
-              value={spi.cs} onChange={e => setSpi(c => ({ ...c, cs: Number(e.target.value) }))}>
+            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14" value={spi.cs} onChange={e => { const next = { ...spi, cs: Number(e.target.value) }; setSpi(next); handleChange({ spi: next }); }}>
               <option value={-1}>None</option>
               {Array.from({ length: 16 }, (_, i) => <option key={i} value={i}>D{i}</option>)}
             </select>
             <span className="text-fob-text-dim">Mode:</span>
-            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5"
-              value={spi.mode} onChange={e => setSpi(c => ({ ...c, mode: Number(e.target.value) as 0 | 1 | 2 | 3 }))}>
+            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5" value={spi.mode} onChange={e => { const next = { ...spi, mode: Number(e.target.value) as 0 | 1 | 2 | 3 }; setSpi(next); handleChange({ spi: next }); }}>
               {[0, 1, 2, 3].map(m => <option key={m} value={m}>{m}</option>)}
             </select>
             <span className="text-fob-text-dim">Bits:</span>
-            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5"
-              value={spi.bits} onChange={e => setSpi(c => ({ ...c, bits: Number(e.target.value) as 8 | 16 }))}>
+            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5" value={spi.bits} onChange={e => { const next = { ...spi, bits: Number(e.target.value) as 8 | 16 }; setSpi(next); handleChange({ spi: next }); }}>
               <option value={8}>8</option>
               <option value={16}>16</option>
             </select>
             <label className="flex items-center gap-1 text-fob-text-dim cursor-pointer">
-              <input type="checkbox" checked={spi.csActiveLow} onChange={e => setSpi(c => ({ ...c, csActiveLow: e.target.checked }))} />
+              <input type="checkbox" checked={spi.csActiveLow} onChange={e => { const next = { ...spi, csActiveLow: e.target.checked }; setSpi(next); handleChange({ spi: next }); }} />
               CS active low
             </label>
-          </div>
-          <div className="flex-1 overflow-y-auto font-mono text-[11px] px-3 py-2 space-y-1">
-            {spiRows.length === 0 ? (
-              <div className="text-fob-text-dim text-center mt-4">
-                {running ? "Stop capture to decode SPI" : "No SPI frames — check channel assignments and mode"}
-              </div>
-            ) : (
-              spiRows.map((r, i) => (
-                <div key={i} className="flex gap-3 leading-6 text-fob-text">
-                  <span className="text-fob-text-dim w-16 shrink-0">{fmt(r.ts)}</span>
-                  <span className="text-fob-blue shrink-0">MOSI 0x{r.mosi?.toString(16).padStart(spi.bits / 4, "0").toUpperCase() ?? "--"}</span>
-                  <span className="text-fob-green shrink-0">MISO 0x{r.miso?.toString(16).padStart(spi.bits / 4, "0").toUpperCase() ?? "--"}</span>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* CAN */}
-      {tab === "can" && (
-        <div className="flex flex-col flex-1 min-h-0">
-          <div className="flex items-center gap-2 px-2 py-1 bg-fob-surface border-b border-fob-border text-xs shrink-0 flex-wrap">
+          </>
+        )}
+        {tab === "can" && (
+          <>
             <span className="text-fob-text-dim">CH:</span>
-            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14"
-              value={can.ch} onChange={e => setCan(c => ({ ...c, ch: Number(e.target.value) }))}>
+            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14" value={can.ch} onChange={e => { const next = { ...can, ch: Number(e.target.value) }; setCan(next); handleChange({ can: next }); }}>
               {Array.from({ length: 16 }, (_, i) => <option key={i} value={i}>D{i}</option>)}
             </select>
             <span className="text-fob-text-dim">Baud:</span>
-            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5"
-              value={can.baud} onChange={e => setCan(c => ({ ...c, baud: Number(e.target.value) }))}>
+            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5" value={can.baud} onChange={e => { const next = { ...can, baud: Number(e.target.value) }; setCan(next); handleChange({ can: next }); }}>
               {[125000, 250000, 500000, 800000, 1000000].map(b => <option key={b} value={b}>{(b / 1000).toFixed(0)}k</option>)}
             </select>
-          </div>
-          <div className="flex-1 overflow-y-auto font-mono text-[11px] px-3 py-2 space-y-1">
-            {canRows.length === 0 ? (
-              <div className="text-fob-text-dim text-center mt-4">
-                {running ? "Stop capture to decode CAN" : "No CAN frames — check channel and baud rate"}
-              </div>
-            ) : (
-              canRows.map((r, i) => (
-                <div key={i} className={`flex gap-3 leading-6 ${r.error ? "text-fob-red" : "text-fob-text"}`}>
-                  <span className="text-fob-text-dim w-16 shrink-0">{fmt(r.ts)}</span>
-                  <span className="text-fob-blue shrink-0">{r.extended ? "Ext" : "Std"}</span>
-                  <span className="text-fob-yellow shrink-0">ID 0x{r.id.toString(16).toUpperCase()}</span>
-                  <span className="text-fob-text-dim shrink-0">DLC {r.dlc}</span>
-                  <span className="text-fob-green shrink-0">{r.data.map(b => b.toString(16).padStart(2, "0").toUpperCase()).join(" ")}</span>
-                  {r.error && <span className="text-fob-red">⚠</span>}
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* 1-Wire */}
-      {tab === "onewire" && (
-        <div className="flex flex-col flex-1 min-h-0">
-          <div className="flex items-center gap-2 px-2 py-1 bg-fob-surface border-b border-fob-border text-xs shrink-0 flex-wrap">
+          </>
+        )}
+        {tab === "onewire" && (
+          <>
             <span className="text-fob-text-dim">CH:</span>
-            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14"
-              value={onewire.ch} onChange={e => setOneWire(c => ({ ...c, ch: Number(e.target.value) }))}>
+            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14" value={onewire.ch} onChange={e => { const next = { ...onewire, ch: Number(e.target.value) }; setOneWire(next); handleChange({ onewire: next }); }}>
               {Array.from({ length: 16 }, (_, i) => <option key={i} value={i}>D{i}</option>)}
             </select>
-          </div>
-          <div className="flex-1 overflow-y-auto font-mono text-[11px] px-3 py-2 space-y-1">
-            {oneWireRows.length === 0 ? (
-              <div className="text-fob-text-dim text-center mt-4">
-                {running ? "Stop capture to decode 1-Wire" : "No 1-Wire traffic — check channel"}
-              </div>
-            ) : (
-              oneWireRows.map((r, i) => (
-                <div key={i} className="flex gap-3 leading-6 text-fob-text">
-                  <span className="text-fob-text-dim w-16 shrink-0">{fmt(r.ts)}</span>
-                  <span className="text-fob-blue shrink-0">{r.type.toUpperCase()}</span>
-                  {r.value !== undefined && r.type === "byte" && (
-                    <span className="text-fob-green shrink-0">0x{r.value.toString(16).padStart(2, "0").toUpperCase()}</span>
-                  )}
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* SWD */}
-      {tab === "swd" && (
-        <div className="flex flex-col flex-1 min-h-0">
-          <div className="flex items-center gap-2 px-2 py-1 bg-fob-surface border-b border-fob-border text-xs shrink-0 flex-wrap">
+          </>
+        )}
+        {tab === "swd" && (
+          <>
             <span className="text-fob-text-dim">DIO:</span>
-            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14"
-              value={swd.swdio} onChange={e => setSwd(c => ({ ...c, swdio: Number(e.target.value) }))}>
+            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14" value={swd.swdio} onChange={e => { const next = { ...swd, swdio: Number(e.target.value) }; setSwd(next); handleChange({ swd: next }); }}>
               {Array.from({ length: 16 }, (_, i) => <option key={i} value={i}>D{i}</option>)}
             </select>
             <span className="text-fob-text-dim">CLK:</span>
-            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14"
-              value={swd.swclk} onChange={e => setSwd(c => ({ ...c, swclk: Number(e.target.value) }))}>
+            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14" value={swd.swclk} onChange={e => { const next = { ...swd, swclk: Number(e.target.value) }; setSwd(next); handleChange({ swd: next }); }}>
               {Array.from({ length: 16 }, (_, i) => <option key={i} value={i}>D{i}</option>)}
             </select>
-          </div>
-          <div className="flex-1 overflow-y-auto font-mono text-[11px] px-3 py-2 space-y-1">
-            {swdRows.length === 0 ? (
-              <div className="text-fob-text-dim text-center mt-4">
-                {running ? "Stop capture to decode SWD" : "No SWD traffic — check DIO/CLK channels"}
-              </div>
-            ) : (
-              swdRows.map((r, i) => (
-                <div key={i} className="flex gap-3 leading-6 text-fob-text">
-                  <span className="text-fob-text-dim w-16 shrink-0">{fmt(r.ts)}</span>
-                  <span className="text-fob-blue shrink-0">{r.type.toUpperCase()}</span>
-                  {r.type === "request" && (
-                    <>
-                      <span className="text-fob-yellow shrink-0">{r.read ? "R" : "W"}</span>
-                      <span className="text-fob-text-dim shrink-0">{r.apnDp === 1 ? "AP" : "DP"}</span>
-                      <span className="text-fob-green shrink-0">0x{r.addr!.toString(16).toUpperCase()}</span>
-                    </>
-                  )}
-                  {r.type === "data" && r.data !== undefined && (
-                    <span className="text-fob-green shrink-0">0x{r.data.toString(16).padStart(8, "0").toUpperCase()}</span>
-                  )}
-                  {r.ok === false && <span className="text-fob-red">⚠</span>}
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* JTAG */}
-      {tab === "jtag" && (
-        <div className="flex flex-col flex-1 min-h-0">
-          <div className="flex items-center gap-2 px-2 py-1 bg-fob-surface border-b border-fob-border text-xs shrink-0 flex-wrap">
+          </>
+        )}
+        {tab === "jtag" && (
+          <>
             <span className="text-fob-text-dim">TCK:</span>
-            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14"
-              value={jtag.tck} onChange={e => setJtag(c => ({ ...c, tck: Number(e.target.value) }))}>
+            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14" value={jtag.tck} onChange={e => { const next = { ...jtag, tck: Number(e.target.value) }; setJtag(next); handleChange({ jtag: next }); }}>
               {Array.from({ length: 16 }, (_, i) => <option key={i} value={i}>D{i}</option>)}
             </select>
             <span className="text-fob-text-dim">TMS:</span>
-            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14"
-              value={jtag.tms} onChange={e => setJtag(c => ({ ...c, tms: Number(e.target.value) }))}>
+            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14" value={jtag.tms} onChange={e => { const next = { ...jtag, tms: Number(e.target.value) }; setJtag(next); handleChange({ jtag: next }); }}>
               {Array.from({ length: 16 }, (_, i) => <option key={i} value={i}>D{i}</option>)}
             </select>
             <span className="text-fob-text-dim">TDI:</span>
-            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14"
-              value={jtag.tdi} onChange={e => setJtag(c => ({ ...c, tdi: Number(e.target.value) }))}>
+            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14" value={jtag.tdi} onChange={e => { const next = { ...jtag, tdi: Number(e.target.value) }; setJtag(next); handleChange({ jtag: next }); }}>
               {Array.from({ length: 16 }, (_, i) => <option key={i} value={i}>D{i}</option>)}
             </select>
             <span className="text-fob-text-dim">TDO:</span>
-            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14"
-              value={jtag.tdo} onChange={e => setJtag(c => ({ ...c, tdo: Number(e.target.value) }))}>
+            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14" value={jtag.tdo} onChange={e => { const next = { ...jtag, tdo: Number(e.target.value) }; setJtag(next); handleChange({ jtag: next }); }}>
               {Array.from({ length: 16 }, (_, i) => <option key={i} value={i}>D{i}</option>)}
             </select>
-          </div>
-          <div className="flex-1 overflow-y-auto font-mono text-[11px] px-3 py-2 space-y-1">
-            {jtagRows.length === 0 ? (
-              <div className="text-fob-text-dim text-center mt-4">
-                {running ? "Stop capture to decode JTAG" : "No JTAG traffic — check TCK/TMS/TDI/TDO channels"}
-              </div>
-            ) : (
-              jtagRows.map((r, i) => (
-                <div key={i} className="flex gap-3 leading-6 text-fob-text">
-                  <span className="text-fob-text-dim w-16 shrink-0">{fmt(r.ts)}</span>
-                  <span className="text-fob-blue shrink-0">{r.type.toUpperCase()}</span>
-                  {r.type === "state" && <span className="text-fob-yellow shrink-0">{r.state}</span>}
-                  {r.type === "shift" && (
-                    <>
-                      <span className="text-fob-text-dim shrink-0">{r.register}</span>
-                      <span className="text-fob-yellow shrink-0">TDI 0x{r.tdi!.toString(16).padStart(Math.ceil((r.bits ?? 1) / 4), "0").toUpperCase()}</span>
-                      <span className="text-fob-green shrink-0">TDO 0x{r.tdo!.toString(16).padStart(Math.ceil((r.bits ?? 1) / 4), "0").toUpperCase()}</span>
-                      <span className="text-fob-text-dim shrink-0">({r.bits} bits)</span>
-                    </>
-                  )}
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Modbus */}
-      {tab === "modbus" && (
-        <div className="flex flex-col flex-1 min-h-0">
-          <div className="flex items-center gap-2 px-2 py-1 bg-fob-surface border-b border-fob-border text-xs shrink-0 flex-wrap">
+          </>
+        )}
+        {tab === "modbus" && (
+          <>
             <span className="text-fob-text-dim">CH:</span>
-            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14"
-              value={modbus.ch} onChange={e => setModbus(c => ({ ...c, ch: Number(e.target.value) }))}>
+            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-14" value={modbus.ch} onChange={e => { const next = { ...modbus, ch: Number(e.target.value) }; setModbus(next); handleChange({ modbus: next }); }}>
               {Array.from({ length: 16 }, (_, i) => <option key={i} value={i}>D{i}</option>)}
             </select>
             <span className="text-fob-text-dim">Baud:</span>
-            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-20"
-              value={modbus.baud} onChange={e => setModbus(c => ({ ...c, baud: Number(e.target.value) }))}>
+            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-20" value={modbus.baud} onChange={e => { const next = { ...modbus, baud: Number(e.target.value) }; setModbus(next); handleChange({ modbus: next }); }}>
               {[9600, 19200, 38400, 57600, 115200].map(b => <option key={b} value={b}>{b}</option>)}
             </select>
             <span className="text-fob-text-dim">Parity:</span>
-            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-16"
-              value={modbus.parity} onChange={e => setModbus(c => ({ ...c, parity: e.target.value as "none" | "even" | "odd" }))}>
+            <select className="bg-fob-surface border border-fob-border rounded px-1 py-0.5 w-16" value={modbus.parity} onChange={e => { const next = { ...modbus, parity: e.target.value as "none" | "even" | "odd" }; setModbus(next); handleChange({ modbus: next }); }}>
               <option value="even">Even</option>
               <option value="odd">Odd</option>
               <option value="none">None</option>
             </select>
-          </div>
-          <div className="flex-1 overflow-y-auto font-mono text-[11px] px-3 py-2 space-y-1">
-            {modbusRows.length === 0 ? (
-              <div className="text-fob-text-dim text-center mt-4">
-                {running ? "Stop capture to decode Modbus" : "No Modbus traffic — check channel/baud/parity"}
-              </div>
+          </>
+        )}
+      </div>
+
+      {/* Ticket strip */}
+      <div className="flex-1 relative overflow-hidden bg-fob-bg" style={{ paddingLeft: DEFAULT_LABEL_WIDTH }}>
+        {stripRows.length === 0 ? (
+          <div className="absolute inset-0 flex items-center justify-center text-fob-text-dim text-xs text-center px-4">
+            {running ? (
+              <>Listening for {tab.toUpperCase()} traffic...</>
+            ) : capture ? (
+              <>No {tab.toUpperCase()} events in this view — zoom out or pan to find traffic</>
             ) : (
-              modbusRows.map((r, i) => (
-                <div key={i} className="flex gap-3 leading-6 text-fob-text">
-                  <span className="text-fob-text-dim w-16 shrink-0">{fmt(r.ts)}</span>
-                  <span className="text-fob-blue shrink-0">{r.type.toUpperCase()}</span>
-                  <span className="text-fob-yellow shrink-0">ADDR {r.addr}</span>
-                  <span className="text-fob-text-dim shrink-0">FUNC 0x{r.func.toString(16).padStart(2, "0").toUpperCase()}</span>
-                  <span className="text-fob-green shrink-0">{r.data.map(b => b.toString(16).padStart(2, "0").toUpperCase()).join(" ")}</span>
-                  {r.crcOk ? <span className="text-fob-green shrink-0">OK</span> : <span className="text-fob-red shrink-0">CRC</span>}
-                </div>
-              ))
+              <>Load a capture or pattern to decode {tab.toUpperCase()}</>
             )}
           </div>
-        </div>
-      )}
+        ) : (
+          <div className="absolute inset-0">
+            {stripRows.map((r, i) => {
+              const start = panSample ?? 0;
+              const bps = (capture?.width ?? 8) === 16 ? 2 : 1;
+              const range = zoomSamples ?? (capture ? Math.floor(capture.samples.length / bps) : 0);
+              if (range <= 0) return null;
+              const left = ((r.sample - start) / range) * 100;
+              const sr = capture?.sampleRate ?? sampleRate ?? 0;
+              // Clock-aware minimum: at least 2 bit periods if the decoder measured one, else 25ms fallback.
+              const fallbackMinSamples = sr > 0 ? (sr * 25) / 1000 : 0;
+              const minSamples = r.bitSamples && r.bitSamples > 0 ? r.bitSamples * 2 : fallbackMinSamples;
+              const nextStart = stripRows[i + 1]?.sample ?? (start + range);
+              const widthSamples = Math.min(Math.max(r.endSample - r.sample, minSamples), Math.max(1, nextStart - r.sample));
+              const width = Math.max((widthSamples / range) * 100, 1.5);
+              return (
+                <button
+                  key={i}
+                  className={`absolute top-1/2 -translate-y-1/2 px-1 py-0.5 rounded text-[10px] font-mono border truncate transition-colors z-0 hover:z-10 ${r.error ? "bg-fob-red/10 border-fob-red text-fob-red" : "bg-fob-surface border-fob-border text-fob-text hover:border-fob-text-dim"}`}
+                  style={{ left: `${left}%`, width: `${width}%`, minWidth: "40px" }}
+                  onClick={() => onPacketClick?.(r.sample)}
+                  title={r.label}
+                >
+                  {r.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

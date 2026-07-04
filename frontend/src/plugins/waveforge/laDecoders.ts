@@ -5,7 +5,7 @@
 
 export const MAX_TICKER = 200; // max ticker rows to keep
 
-export interface TickerRow { ts: number; byte: number; sample: number; endSample: number; error: boolean; parityOk?: boolean; }
+export interface TickerRow { ts: number; byte: number; sample: number; endSample: number; error: boolean; parityOk?: boolean; bitSamples?: number; }
 
 export interface I2CFrame {
   startSample: number;
@@ -15,6 +15,7 @@ export interface I2CFrame {
   addr?: number;     // 7-bit address
   data?: number;     // byte value
   rw?: "read" | "write";
+  bitSamples?: number; // SCL period, for clock-aware UI rendering
 }
 
 export interface SPIFrame {
@@ -23,6 +24,7 @@ export interface SPIFrame {
   ts: number;
   mosi?: number;
   miso?: number;
+  bitSamples?: number; // SCK period, for clock-aware UI rendering
 }
 
 export interface CANFrame {
@@ -35,6 +37,7 @@ export interface CANFrame {
   dlc: number;
   data: number[];
   error?: boolean;
+  bitSamples?: number; // CAN bit period, for clock-aware UI rendering
 }
 
 export interface OneWireFrame {
@@ -43,6 +46,7 @@ export interface OneWireFrame {
   ts: number;
   type: "reset" | "presence" | "byte";
   value?: number;
+  bitSamples?: number; // 1-Wire bit period, for clock-aware UI rendering
 }
 
 export interface SWDFrame {
@@ -55,6 +59,7 @@ export interface SWDFrame {
   addr?: number;
   data?: number;
   ok?: boolean;
+  bitSamples?: number; // SWDCLK period, for clock-aware UI rendering
 }
 
 export interface JTAGFrame {
@@ -67,6 +72,7 @@ export interface JTAGFrame {
   tdi?: number;
   tdo?: number;
   bits?: number;
+  bitSamples?: number; // TCK period, for clock-aware UI rendering
 }
 
 export interface ModbusFrame {
@@ -78,6 +84,7 @@ export interface ModbusFrame {
   func: number;
   data: number[];
   crcOk: boolean;
+  bitSamples?: number; // UART bit period, for clock-aware UI rendering
 }
 
 export type DecoderTab = "uart" | "i2c" | "spi" | "can" | "onewire" | "swd" | "jtag" | "modbus";
@@ -457,7 +464,8 @@ export function decodeUartChunk(
       const error = stopBit !== 1 || parityOk === false;
       const absSample = baseSample + fs;
       const endSample = absSample + Math.round((1 + dataBits + parityOffset + stopBits) * spb);
-      rows.push({ ts: absSample / sampleRate, byte: v, sample: absSample, endSample, error, parityOk });
+      const bitSamples = Math.max(1, Math.round(spb));
+      rows.push({ ts: absSample / sampleRate, byte: v, sample: absSample, endSample, error, parityOk, bitSamples });
       // Advance to the middle of the stop bit, then scan for the next idle -> start edge.
       // This avoids landing exactly on the next start bit when spb is non-integer.
       i = Math.round(fs + (dataBits + parityOffset + 1 + stopBits / 2) * spb);
@@ -512,6 +520,9 @@ export function decodeI2C(
   let byte = 0;
   let bitCount = 0;
   let isAddr = true;
+  let lastSclRise = -1;
+  let sclPeriodSum = 0;
+  let sclPeriodCount = 0;
 
   while (i < samples.length - 1) {
     // START: SDA falling while SCL high (SCL must stay high across both samples)
@@ -535,35 +546,48 @@ export function decodeI2C(
       i++;
       continue;
     }
-    // SCL rising edge: sample SDA
-    if (inFrame && scl(i) === 0 && scl(i + 1) === 1) {
+    // SCL rising edge: sample SDA, also measure clock period
+    if (scl(i) === 0 && scl(i + 1) === 1) {
       const sampleIdx = i + 1;
-      const b = sda(sampleIdx);
-      if (bitCount < 8) {
-        if (bitCount === 0) byteStart = sampleIdx;
-        byte = (byte << 1) | b;
-        bitCount++;
-      } else {
-        // ACK/NACK bit
-        const ack = b === 0;
-        const endSample = sampleIdx;
-        if (isAddr) {
-          const addr7 = byte >> 1;
-          const rw = (byte & 1) ? "read" : "write";
-          rows.push({ startSample: byteStart, endSample, ts: byteStart / sampleRate, type: "byte", addr: addr7, rw });
-          isAddr = false;
+      if (lastSclRise >= 0) {
+        sclPeriodSum += sampleIdx - lastSclRise;
+        sclPeriodCount++;
+      }
+      lastSclRise = sampleIdx;
+      if (inFrame) {
+        const b = sda(sampleIdx);
+        if (bitCount < 8) {
+          if (bitCount === 0) byteStart = sampleIdx;
+          byte = (byte << 1) | b;
+          bitCount++;
         } else {
-          rows.push({ startSample: byteStart, endSample, ts: byteStart / sampleRate, type: "byte", data: byte });
+          // ACK/NACK bit
+          const ack = b === 0;
+          const endSample = sampleIdx;
+          const bitSamples = sclPeriodCount > 0 ? Math.round(sclPeriodSum / sclPeriodCount) : 0;
+          if (isAddr) {
+            const addr7 = byte >> 1;
+            const rw = (byte & 1) ? "read" : "write";
+            rows.push({ startSample: byteStart, endSample, ts: byteStart / sampleRate, type: "byte", addr: addr7, rw, bitSamples });
+            isAddr = false;
+          } else {
+            rows.push({ startSample: byteStart, endSample, ts: byteStart / sampleRate, type: "byte", data: byte, bitSamples });
+          }
+          rows.push({ startSample: sampleIdx, endSample, ts: sampleIdx / sampleRate, type: ack ? "ack" : "nack", bitSamples });
+          byte = 0;
+          bitCount = 0;
+          if (rows.length > MAX_TICKER) break;
         }
-        rows.push({ startSample: sampleIdx, endSample, ts: sampleIdx / sampleRate, type: ack ? "ack" : "nack" });
-        byte = 0;
-        bitCount = 0;
-        if (rows.length > MAX_TICKER) break;
       }
       i = sampleIdx;
       continue;
     }
     i++;
+  }
+  // Backfill START/STOP rows with the measured SCL period so they render at the same scale.
+  const avgBitSamples = sclPeriodCount > 0 ? Math.round(sclPeriodSum / sclPeriodCount) : 0;
+  for (const r of rows) {
+    if (r.bitSamples === undefined) r.bitSamples = avgBitSamples;
   }
   return rows;
 }
@@ -590,6 +614,9 @@ export function decodeSPI(
   let miso = 0;
   let bitCount = 0;
   let prevSck = 0;
+  let lastSckEdge = -1;
+  let periodSum = 0;
+  let periodCount = 0;
 
   while (i < samples.length) {
     const active = csActive(i);
@@ -598,10 +625,14 @@ export function decodeSPI(
       wordStart = i;
       mosi = 0; miso = 0; bitCount = 0;
       prevSck = bit(i, sckCh);
+      lastSckEdge = -1;
+      periodSum = 0;
+      periodCount = 0;
     } else if (inFrame && !active) {
       inFrame = false;
       if (bitCount > 0) {
-        rows.push({ startSample: wordStart, endSample: i, ts: wordStart / sampleRate, mosi, miso });
+        const bitSamples = periodCount > 0 ? Math.round(periodSum / periodCount) : 0;
+        rows.push({ startSample: wordStart, endSample: i, ts: wordStart / sampleRate, mosi, miso, bitSamples });
       }
       if (rows.length > MAX_TICKER) break;
     }
@@ -610,15 +641,26 @@ export function decodeSPI(
       const sck = bit(i, sckCh);
       const rising = prevSck === 0 && sck === 1;
       const falling = prevSck === 1 && sck === 0;
+      if (rising || falling) {
+        if (lastSckEdge >= 0) {
+          periodSum += i - lastSckEdge;
+          periodCount++;
+        }
+        lastSckEdge = i;
+      }
       const sampleEdge = sampleRising ? rising : falling;
       if (sampleEdge) {
         mosi = (mosi << 1) | bit(i, mosiCh);
         miso = (miso << 1) | bit(i, misoCh);
         bitCount++;
         if (bitCount === bits) {
-          rows.push({ startSample: wordStart, endSample: i, ts: wordStart / sampleRate, mosi, miso });
+          const bitSamples = periodCount > 0 ? Math.round(periodSum / periodCount) : 0;
+          rows.push({ startSample: wordStart, endSample: i, ts: wordStart / sampleRate, mosi, miso, bitSamples });
           mosi = 0; miso = 0; bitCount = 0;
           wordStart = i;
+          lastSckEdge = -1;
+          periodSum = 0;
+          periodCount = 0;
           if (rows.length > MAX_TICKER) break;
         }
       }
@@ -733,6 +775,7 @@ export function decodeCAN(
       const endSample = Math.min(samples.length - 1, Math.round(sof + n * spb));
       const error = ack !== 0 || !crcDelimOk || !eofOk;
       if (!error) {
+        const bitSamples = Math.max(1, Math.round(spb));
         frames.push({
           startSample: sof,
           endSample,
@@ -743,6 +786,7 @@ export function decodeCAN(
           dlc,
           data,
           error,
+          bitSamples,
         });
         if (frames.length > MAX_TICKER) break;
       }
@@ -757,24 +801,28 @@ export function decodeCAN(
 
 // Generate a synthetic LA capture for offline decoder/UX testing.
 // UART on D0, I2C on D1/D2, SPI on D3-D6 at 1 MHz 8-bit.
-export function generateLaTestPattern(sampleRate: number, durationS: number): Uint8Array {
+// All decoder traffic is placed as short bursts at the start; the rest is idle.
+export function generateLaTestPattern(
+  sampleRate: number,
+  durationS: number
+): { samples: Uint8Array; dataEndSample: number } {
   const totalSamples = Math.floor(sampleRate * durationS);
   const samples = new Uint8Array(totalSamples);
   const bitTime = Math.floor(sampleRate / 115200);
-  if (bitTime < 2) return samples;
+  if (bitTime < 2) return { samples, dataEndSample: 0 };
 
   // UART on D0: "Hi\n" at 115200 baud
   const uartBits: number[] = [];
-  const pushBit = (v: number, n: number) => { for (let i = 0; i < n; i++) uartBits.push(v); };
+  const pushUart = (v: number, n: number) => { for (let i = 0; i < n; i++) uartBits.push(v); };
   const uartByte = (b: number) => {
-    pushBit(0, bitTime); // start
-    for (let i = 0; i < 8; i++) pushBit((b >> i) & 1, bitTime);
-    pushBit(1, bitTime); // stop
+    pushUart(0, bitTime); // start
+    for (let i = 0; i < 8; i++) pushUart((b >> i) & 1, bitTime);
+    pushUart(1, bitTime); // stop
   };
   uartByte(0x48); // H
   uartByte(0x69); // i
   uartByte(0x0A); // \n
-  pushBit(1, bitTime * 10); // idle gap
+  pushUart(1, bitTime * 10); // idle gap
 
   // I2C on D1=SCL, D2=SDA (7-bit addr 0x50, write, data 0x01 0x02 0x03)
   const i2cBits: Array<{ scl: number; sda: number }> = [];
@@ -817,30 +865,31 @@ export function generateLaTestPattern(sampleRate: number, durationS: number): Ui
   spiByte(0x5A, 0x34);
   pushSpi(0, 0, 0, 1, bitTime); // CS inactive
 
-  // Interleave each sub-pattern into the total buffer, scaling to fit.
-  const uartScale = Math.max(1, Math.floor(totalSamples / uartBits.length));
-  const i2cScale = Math.max(1, Math.floor(totalSamples / i2cBits.length));
-  const spiScale = Math.max(1, Math.floor(totalSamples / spiBits.length));
-
-  for (let s = 0; s < totalSamples; s++) {
-    let byte = 0;
-    const ui = Math.floor(s / uartScale);
-    if (ui < uartBits.length) byte |= uartBits[ui] << 0;
-    const ii = Math.floor(s / i2cScale);
-    if (ii < i2cBits.length) {
-      byte |= i2cBits[ii].scl << 1;
-      byte |= i2cBits[ii].sda << 2;
+  // Place each burst sequentially at the start of the buffer, leave the rest idle.
+  let cursor = 0;
+  const writeUart = () => {
+    for (let i = 0; i < uartBits.length && cursor < totalSamples; i++, cursor++) {
+      samples[cursor] |= uartBits[i] << 0;
     }
-    const si = Math.floor(s / spiScale);
-    if (si < spiBits.length) {
-      byte |= spiBits[si].mosi << 3;
-      byte |= spiBits[si].miso << 4;
-      byte |= spiBits[si].sck << 5;
-      byte |= spiBits[si].cs << 6;
+  };
+  const writeI2c = () => {
+    for (let i = 0; i < i2cBits.length && cursor < totalSamples; i++, cursor++) {
+      samples[cursor] |= i2cBits[i].scl << 1;
+      samples[cursor] |= i2cBits[i].sda << 2;
     }
-    samples[s] = byte;
-  }
-  return samples;
+  };
+  const writeSpi = () => {
+    for (let i = 0; i < spiBits.length && cursor < totalSamples; i++, cursor++) {
+      samples[cursor] |= spiBits[i].mosi << 3;
+      samples[cursor] |= spiBits[i].miso << 4;
+      samples[cursor] |= spiBits[i].sck << 5;
+      samples[cursor] |= spiBits[i].cs << 6;
+    }
+  };
+  writeUart();
+  writeI2c();
+  writeSpi();
+  return { samples, dataEndSample: cursor };
 }
 
 // Generate a single CAN standard frame bit stream (MSB-first) on the given channel.
@@ -1443,6 +1492,7 @@ function parseModbusFrame(rows: TickerRow[], sampleRate: number): ModbusFrame | 
   const crcOk = crcReceived === crcComputed;
   const data = bytes.slice(2, -2);
   const type = func & 0x80 ? "error" : "request";
+  const bitSamples = rows[0]?.bitSamples ?? 0;
   return {
     startSample: rows[0].sample,
     endSample: rows[rows.length - 1].sample,
@@ -1452,6 +1502,7 @@ function parseModbusFrame(rows: TickerRow[], sampleRate: number): ModbusFrame | 
     func: func & 0x7f,
     data,
     crcOk,
+    bitSamples,
   };
 }
 

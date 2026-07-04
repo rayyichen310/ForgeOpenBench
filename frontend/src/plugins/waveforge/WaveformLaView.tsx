@@ -237,36 +237,36 @@ export function WaveformLaView(props: Props) {
 
   const uartRows = useMemo(() => {
     if (!windowedCapture || decoderState.tab !== "uart" || !decoderState.uart) return [];
-    return decodeUartChunk(windowedCapture.samples, windowedCapture.sampleRate, decoderState.uart.baud, decoderState.uart.ch);
-  }, [windowedCapture, decoderState]);
+    return decodeUartChunk(windowedCapture.samples, windowedCapture.sampleRate, decoderState.uart.baud, decoderState.uart.ch).map(r => ({ ...r, sample: r.sample + panSample, endSample: r.endSample + panSample }));
+  }, [windowedCapture, decoderState, panSample]);
   const i2cRows = useMemo(() => {
     if (!windowedCapture || decoderState.tab !== "i2c" || !decoderState.i2c) return [];
-    return decodeI2C(windowedCapture.samples, windowedCapture.sampleRate, decoderState.i2c.scl, decoderState.i2c.sda);
-  }, [windowedCapture, decoderState]);
+    return decodeI2C(windowedCapture.samples, windowedCapture.sampleRate, decoderState.i2c.scl, decoderState.i2c.sda).map(r => ({ ...r, startSample: r.startSample + panSample, endSample: r.endSample + panSample }));
+  }, [windowedCapture, decoderState, panSample]);
   const spiRows = useMemo(() => {
     if (!windowedCapture || decoderState.tab !== "spi" || !decoderState.spi) return [];
-    return decodeSPI(windowedCapture.samples, windowedCapture.sampleRate, decoderState.spi.mosi, decoderState.spi.miso, decoderState.spi.sck, decoderState.spi.cs, decoderState.spi.mode, decoderState.spi.bits, decoderState.spi.csActiveLow);
-  }, [windowedCapture, decoderState]);
+    return decodeSPI(windowedCapture.samples, windowedCapture.sampleRate, decoderState.spi.mosi, decoderState.spi.miso, decoderState.spi.sck, decoderState.spi.cs, decoderState.spi.mode, decoderState.spi.bits, decoderState.spi.csActiveLow).map(r => ({ ...r, startSample: r.startSample + panSample, endSample: r.endSample + panSample }));
+  }, [windowedCapture, decoderState, panSample]);
   const canRows = useMemo(() => {
     if (!windowedCapture || decoderState.tab !== "can" || !decoderState.can) return [];
-    return decodeCAN(windowedCapture.samples, windowedCapture.sampleRate, decoderState.can.ch, decoderState.can.baud);
-  }, [windowedCapture, decoderState]);
+    return decodeCAN(windowedCapture.samples, windowedCapture.sampleRate, decoderState.can.ch, decoderState.can.baud).map(r => ({ ...r, startSample: r.startSample + panSample, endSample: r.endSample + panSample }));
+  }, [windowedCapture, decoderState, panSample]);
   const oneWireRows = useMemo(() => {
     if (!windowedCapture || decoderState.tab !== "onewire" || !decoderState.onewire) return [];
-    return decodeOneWire(windowedCapture.samples, windowedCapture.sampleRate, decoderState.onewire.ch);
-  }, [windowedCapture, decoderState]);
+    return decodeOneWire(windowedCapture.samples, windowedCapture.sampleRate, decoderState.onewire.ch).map(r => ({ ...r, startSample: r.startSample + panSample, endSample: r.endSample + panSample }));
+  }, [windowedCapture, decoderState, panSample]);
   const swdRows = useMemo(() => {
     if (!windowedCapture || decoderState.tab !== "swd" || !decoderState.swd) return [];
-    return decodeSWD(windowedCapture.samples, windowedCapture.sampleRate, decoderState.swd.swdio, decoderState.swd.swclk);
-  }, [windowedCapture, decoderState]);
+    return decodeSWD(windowedCapture.samples, windowedCapture.sampleRate, decoderState.swd.swdio, decoderState.swd.swclk).map(r => ({ ...r, startSample: r.startSample + panSample, endSample: r.endSample + panSample }));
+  }, [windowedCapture, decoderState, panSample]);
   const jtagRows = useMemo(() => {
     if (!windowedCapture || decoderState.tab !== "jtag" || !decoderState.jtag) return [];
-    return decodeJTAG(windowedCapture.samples, windowedCapture.sampleRate, decoderState.jtag.tck, decoderState.jtag.tms, decoderState.jtag.tdi, decoderState.jtag.tdo);
-  }, [windowedCapture, decoderState]);
+    return decodeJTAG(windowedCapture.samples, windowedCapture.sampleRate, decoderState.jtag.tck, decoderState.jtag.tms, decoderState.jtag.tdi, decoderState.jtag.tdo).map(r => ({ ...r, startSample: r.startSample + panSample, endSample: r.endSample + panSample }));
+  }, [windowedCapture, decoderState, panSample]);
   const modbusRows = useMemo(() => {
     if (!windowedCapture || decoderState.tab !== "modbus" || !decoderState.modbus) return [];
-    return decodeModbus(windowedCapture.samples, windowedCapture.sampleRate, decoderState.modbus.ch, decoderState.modbus.baud, decoderState.modbus.parity);
-  }, [windowedCapture, decoderState]);
+    return decodeModbus(windowedCapture.samples, windowedCapture.sampleRate, decoderState.modbus.ch, decoderState.modbus.baud, decoderState.modbus.parity).map(r => ({ ...r, startSample: r.startSample + panSample, endSample: r.endSample + panSample }));
+  }, [windowedCapture, decoderState, panSample]);
 
   const totalSamples = useMemo(() => captureMeta?.totalSamples ?? 0, [captureMeta]);
 
@@ -334,7 +334,7 @@ export function WaveformLaView(props: Props) {
   const handlePattern = useCallback(async () => {
     if (isRunning) return;
     const rate = 1_000_000;
-    const samples = generateLaTestPattern(rate, 1);
+    const { samples, dataEndSample } = generateLaTestPattern(rate, 1);
     const loaded: LaCapture = {
       sampleRate: rate,
       width: 8,
@@ -349,7 +349,9 @@ export function WaveformLaView(props: Props) {
     setActiveCaptureId(id);
     setCaptureMeta(meta);
     setSampleRate(rate);
-    setZoomSamples(null);
+    // Auto-zoom to the active data region with a little idle padding so it isn't a sliver.
+    const initialZoom = dataEndSample > 0 ? Math.ceil(dataEndSample * 1.5) : null;
+    setZoomSamples(initialZoom);
     setPanSample(0);
   }, [isRunning]);
 
@@ -547,8 +549,10 @@ export function WaveformLaView(props: Props) {
             <LaDecodersPanel
               capture={windowedCapture}
               sampleRate={sampleRate}
+              panSample={panSample}
+              zoomSamples={zoomSamples}
               running={isRunning}
-              suggestedTab={decoderDefaults.tab}
+              tab={decoderState.tab}
               defaultUart={decoderDefaults.uart}
               defaultI2c={decoderDefaults.i2c}
               defaultSpi={decoderDefaults.spi}
@@ -557,7 +561,16 @@ export function WaveformLaView(props: Props) {
               defaultSwd={decoderDefaults.swd}
               defaultJtag={decoderDefaults.jtag}
               defaultModbus={decoderDefaults.modbus}
+              uartRows={uartRows}
+              i2cRows={i2cRows}
+              spiRows={spiRows}
+              canRows={canRows}
+              oneWireRows={oneWireRows}
+              swdRows={swdRows}
+              jtagRows={jtagRows}
+              modbusRows={modbusRows}
               onChange={setDecoderState}
+              onPacketClick={handlePacketClick}
             />
           </div>
         </div>
