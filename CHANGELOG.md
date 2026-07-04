@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.1-rc17] — 2026-07-03
+
+### Added
+- **WaveForge LA — Time Machine (persistent indexed history buffer)**
+  - New `LaHistoryBuffer` class chunks captures into 1M-sample segments and persists them via IndexedDB.
+  - LRU hot-cache (20 chunks) keeps recently viewed segments in memory for fast scrubbing.
+  - `WaveformLaView` now loads only the visible window on pan/zoom, decoders run on the windowed subset.
+  - Auto-detect uses a 2M-sample probe window so large captures don't need full scans.
+  - Export loads the full capture from history on demand.
+  - New files: `laHistoryStore.ts` (IDB layer), `LaHistoryBuffer.ts` (chunking + cache).
+  - Tests: `laHistoryStore.test.ts` with mocked IndexedDB covering chunking, window slicing, and LRU eviction.
+
 ## [0.9.1-rc16] — 2026-07-03
 
 ### Fixed
