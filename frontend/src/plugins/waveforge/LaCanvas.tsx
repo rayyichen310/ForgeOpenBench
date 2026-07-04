@@ -5,6 +5,7 @@ import type { DecoderTab, TickerRow, I2CFrame, SPIFrame, CANFrame, OneWireFrame,
 
 interface Props {
   samples: Uint8Array;
+  totalSamples: number;
   sampleRate: number;
   width: 8 | 16;
   channels: LaChannel[];
@@ -51,7 +52,33 @@ export function LaCanvas(props: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const isPanningRef = useRef(false);
   const panStartRef = useRef<{ x: number; pan: number } | null>(null);
-  const totalSamples = Math.floor(props.samples.length / (props.width === 16 ? 2 : 1));
+  const totalSamples = props.totalSamples;
+
+  // Mutable refs for latest prop values (avoid stale closure in rAF callbacks)
+  const zoomRef = useRef(props.zoomSamples);
+  const panRef = useRef(props.panSample);
+  const onZoomRef = useRef(props.onZoomChange);
+  const onPanRef = useRef(props.onPanChange);
+  // Local mutable zoom/pan for wheel handler — updated immediately so successive
+  // wheel events never read stale prop values before React re-render arrives.
+  const wheelZoomRef = useRef<number | null>(null);
+  const wheelPanRef = useRef(0);
+  const drawRafRef = useRef(0);
+  const wheelAccumRef = useRef({ deltaY: 0, offsetX: 0, hasEvent: false });
+  const wheelRafRef = useRef(0);
+  const dragDxRef = useRef(0);
+  const dragRafRef = useRef(0);
+
+  useEffect(() => {
+    zoomRef.current = props.zoomSamples;
+    wheelZoomRef.current = props.zoomSamples;
+  }, [props.zoomSamples]);
+  useEffect(() => {
+    panRef.current = props.panSample;
+    wheelPanRef.current = props.panSample ?? 0;
+  }, [props.panSample]);
+  useEffect(() => { onZoomRef.current = props.onZoomChange; }, [props.onZoomChange]);
+  useEffect(() => { onPanRef.current = props.onPanChange; }, [props.onPanChange]);
 
   const getChannelY = (idx: number, h: number) => {
     const used = props.channels.filter(c => c.visible);
@@ -144,8 +171,9 @@ export function LaCanvas(props: Props) {
 
       let lastBit = -1;
       for (let px = 0; px < plotW; px++) {
-        const s = Math.floor(pan + px * sPerPx);
-        if (s >= totalSamples) break;
+        const sampleInCapture = Math.floor(pan + px * sPerPx);
+        if (sampleInCapture >= totalSamples) break;
+        const s = sampleInCapture - pan; // index within the windowed buffer
         const off = s * bps;
         const lo = props.samples[off] ?? 0;
         const hi = bps === 2 ? (props.samples[off + 1] ?? 0) : 0;
@@ -298,42 +326,98 @@ export function LaCanvas(props: Props) {
     }
   }, [props, totalSamples]);
 
+  const drawRef = useRef(draw);
+  useEffect(() => { drawRef.current = draw; }, [draw]);
+
+  const scheduleDraw = useCallback(() => {
+    if (drawRafRef.current) return;
+    drawRafRef.current = requestAnimationFrame(() => {
+      drawRafRef.current = 0;
+      drawRef.current();
+    });
+  }, []);
+
   useEffect(() => {
-    draw();
-    const handleResize = () => draw();
+    scheduleDraw();
+  }, [scheduleDraw, props.samples, props.channels, props.cursorA, props.cursorB]);
+
+  useEffect(() => {
+    const handleResize = () => scheduleDraw();
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
-  }, [draw]);
+  }, [scheduleDraw]);
 
-  const handleWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    const zoom = props.zoomSamples ?? totalSamples;
-    const pan = props.panSample ?? 0;
-    const delta = e.deltaY > 0 ? 1.1 : 0.9;
-    const newZoom = Math.max(10, Math.min(zoom * delta, totalSamples));
-    const px = e.nativeEvent.offsetX - LABEL_WIDTH;
-    const plotW = (canvasRef.current?.clientWidth || 0) - LABEL_WIDTH;
-    const focusSample = pan + (Math.max(0, Math.min(px, plotW)) / Math.max(1, plotW)) * zoom;
-    const newPan = Math.max(0, Math.min(focusSample - (px / Math.max(1, plotW)) * newZoom, totalSamples - newZoom));
-    props.onZoomChange?.(newZoom === totalSamples ? null : newZoom);
-    props.onPanChange?.(newPan);
-  };
+  // Native wheel listener with { passive: false } so preventDefault works
+  // Coalesced via rAF: multiple wheel events within one frame collapse to one update.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      wheelAccumRef.current.deltaY += e.deltaY;
+      wheelAccumRef.current.offsetX = e.offsetX;
+      wheelAccumRef.current.hasEvent = true;
+      if (!wheelRafRef.current) {
+        wheelRafRef.current = requestAnimationFrame(() => {
+          wheelRafRef.current = 0;
+          const acc = wheelAccumRef.current;
+          if (!acc.hasEvent) return;
+          // Use local mutable refs so successive wheel events compound smoothly
+          // even before React prop updates arrive.
+          const zoom = wheelZoomRef.current ?? zoomRef.current ?? totalSamples;
+          const pan = wheelPanRef.current ?? panRef.current ?? 0;
+          const dy = Math.abs(acc.deltaY);
+          const factor = 1 + Math.min(dy / 50, 0.5); // 1.02–1.5x depending on scroll velocity
+          const delta = acc.deltaY > 0 ? factor : 1 / factor;
+          const newZoom = Math.max(10, Math.min(Math.round(zoom * delta), totalSamples));
+          const plotW = Math.max(1, (canvasRef.current?.clientWidth || 0) - LABEL_WIDTH);
+          // Clamp pointer position to the plot area so zoom-to-cursor is stable
+          const pxRaw = acc.offsetX - LABEL_WIDTH;
+          const px = Math.max(0, Math.min(pxRaw, plotW));
+          // sample under the cursor before zoom
+          const focusSample = pan + (px / plotW) * zoom;
+          // keep that same sample under the same pixel after zoom
+          const newPan = Math.round(Math.max(0, Math.min(focusSample - (px / plotW) * newZoom, totalSamples - newZoom)));
+          wheelZoomRef.current = newZoom;
+          wheelPanRef.current = newPan;
+          onZoomRef.current?.(newZoom === totalSamples ? null : newZoom);
+          onPanRef.current?.(newPan);
+          acc.deltaY = 0;
+          acc.hasEvent = false;
+        });
+      }
+    };
+    canvas.addEventListener("wheel", handleWheel, { passive: false });
+    return () => canvas.removeEventListener("wheel", handleWheel);
+  }, [totalSamples]);
 
   const handleMouseDown = (e: React.MouseEvent) => {
     isPanningRef.current = true;
-    panStartRef.current = { x: e.clientX, pan: props.panSample ?? 0 };
+    panStartRef.current = { x: e.clientX, pan: panRef.current ?? 0 };
+    dragDxRef.current = 0;
   };
   const handleMouseMove = (e: React.MouseEvent) => {
     if (!isPanningRef.current || !panStartRef.current) return;
-    const zoom = props.zoomSamples ?? totalSamples;
-    const plotW = Math.max(1, (canvasRef.current?.clientWidth || 0) - LABEL_WIDTH);
-    const dx = e.clientX - panStartRef.current.x;
-    const dSamples = (dx / plotW) * zoom;
-    props.onPanChange?.(Math.max(0, Math.min(panStartRef.current.pan - dSamples, totalSamples - zoom)));
+    dragDxRef.current = e.clientX - panStartRef.current.x;
+    if (!dragRafRef.current) {
+      dragRafRef.current = requestAnimationFrame(() => {
+        dragRafRef.current = 0;
+        if (!isPanningRef.current || !panStartRef.current) return;
+        const zoom = zoomRef.current ?? totalSamples;
+        const plotW = Math.max(1, (canvasRef.current?.clientWidth || 0) - LABEL_WIDTH);
+        const dSamples = (dragDxRef.current / plotW) * zoom;
+        onPanRef.current?.(Math.round(Math.max(0, Math.min(panStartRef.current.pan - dSamples, totalSamples - zoom))));
+      });
+    }
   };
   const handleMouseUp = () => {
     isPanningRef.current = false;
     panStartRef.current = null;
+    dragDxRef.current = 0;
+    if (dragRafRef.current) {
+      cancelAnimationFrame(dragRafRef.current);
+      dragRafRef.current = 0;
+    }
   };
 
   return (
@@ -342,7 +426,6 @@ export function LaCanvas(props: Props) {
         ref={canvasRef}
         className="w-full h-full cursor-crosshair"
         style={{ imageRendering: "pixelated" }}
-        onWheel={handleWheel}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}

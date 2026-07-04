@@ -16,6 +16,7 @@ import type { LaCapture, DecoderDefaults } from "./laDecoders";
 import { inferDecoderDefaults, generateLaTestPattern, decodeUartChunk, decodeI2C, decodeSPI, decodeCAN, decodeOneWire, decodeSWD, decodeJTAG, decodeModbus } from "./laDecoders";
 import { parseLaCsv, parseLaJson, detectLaFormat, parseSigrokSr } from "./laImport";
 import { downloadLaCapture } from "./laExport";
+import { LaHistoryBuffer, type LaCaptureMeta } from "./LaHistoryBuffer";
 
 interface Props {
   transport: UsbTransport;
@@ -42,12 +43,120 @@ export function WaveformLaView(props: Props) {
   const [cursorA, setCursorA] = useState<Cursor>({ sample: 0, dragging: false });
   const [cursorB, setCursorB] = useState<Cursor>({ sample: 0, dragging: false });
   const [trigger, setTrigger] = useState<LaTriggerConfig>({ enabled: false, channel: 0, edge: "rise" });
-  const [capture, setCapture] = useState<LaCapture | null>(null);
-  const decoderDefaults = useMemo<DecoderDefaults>(() => inferDecoderDefaults(capture ?? {
-    sampleRate: 12_000_000, width: 16, samples: new Uint8Array(0), source: "none", importedAt: new Date().toISOString(),
-  }), [capture]);
   const [zoomSamples, setZoomSamples] = useState<number | null>(null);
   const [panSample, setPanSample] = useState(0);
+
+  // ── Time Machine: persistent chunked history buffer ──
+  const historyRef = useRef(new LaHistoryBuffer());
+  const fullCaptureRef = useRef<LaCapture | null>(null);
+  const paddedBufferRef = useRef<{ captureId: string; samples: Uint8Array; paddedStartSample: number } | null>(null);
+  const [activeCaptureId, setActiveCaptureId] = useState<string | null>(null);
+  const [captureMeta, setCaptureMeta] = useState<LaCaptureMeta | null>(null);
+  const [windowedCapture, setWindowedCapture] = useState<LaCapture | null>(null);
+  const [probeCapture, setProbeCapture] = useState<LaCapture | null>(null);
+
+  const IN_MEMORY_THRESHOLD = 50 * 1024 * 1024; // 50 MB — slice synchronously, skip IndexedDB on pan/zoom
+  const PADDING_FACTOR = 1.0; // 1× zoomSamples extra on each side for scroll buffer
+
+  useEffect(() => {
+    historyRef.current.init().catch(console.error);
+  }, []);
+
+  // Load visible window whenever capture or viewport changes
+  useEffect(() => {
+    if (!activeCaptureId || !captureMeta) {
+      setWindowedCapture(null);
+      fullCaptureRef.current = null;
+      paddedBufferRef.current = null;
+      return;
+    }
+    const total = captureMeta.totalSamples;
+    const zoom = zoomSamples ?? total;
+    const pan = Math.max(0, Math.min(panSample, Math.max(total - zoom, 0)));
+    const bps = captureMeta.width === 16 ? 2 : 1;
+
+    // Fast path 1: small captures stay in memory, slice synchronously
+    const full = fullCaptureRef.current;
+    if (full && full.samples.length <= IN_MEMORY_THRESHOLD) {
+      const startByte = Math.round(pan * bps);
+      const endByte = Math.min(Math.round((pan + zoom) * bps), total * bps);
+      setWindowedCapture({
+        sampleRate: captureMeta.sampleRate,
+        width: captureMeta.width,
+        samples: full.samples.subarray(startByte, endByte),
+        source: captureMeta.source,
+        importedAt: captureMeta.importedAt,
+        channelLabels: captureMeta.channelLabels,
+      });
+      return;
+    }
+
+    // Fast path 2: viewport lies inside already-loaded padded buffer → slice synchronously
+    const padded = paddedBufferRef.current;
+    if (
+      padded &&
+      padded.captureId === activeCaptureId &&
+      pan >= padded.paddedStartSample &&
+      pan + zoom <= padded.paddedStartSample + Math.floor(padded.samples.length / bps)
+    ) {
+      const startByte = Math.round((pan - padded.paddedStartSample) * bps);
+      const endByte = startByte + Math.round(zoom * bps);
+      setWindowedCapture({
+        sampleRate: captureMeta.sampleRate,
+        width: captureMeta.width,
+        samples: padded.samples.subarray(startByte, endByte),
+        source: captureMeta.source,
+        importedAt: captureMeta.importedAt,
+        channelLabels: captureMeta.channelLabels,
+      });
+      return;
+    }
+
+    // Slow path: load padded window from IndexedDB
+    let cancelled = false;
+    historyRef.current.getWindow(activeCaptureId, pan, zoom, PADDING_FACTOR).then((samples) => {
+      if (cancelled) return;
+      const padSamples = PADDING_FACTOR > 0 ? Math.floor(zoom * PADDING_FACTOR) : 0;
+      const paddedStart = Math.max(0, pan - padSamples);
+      paddedBufferRef.current = { captureId: activeCaptureId, samples, paddedStartSample: paddedStart };
+      const visibleStartByte = Math.round((pan - paddedStart) * bps);
+      const visibleEndByte = visibleStartByte + Math.round(zoom * bps);
+      setWindowedCapture({
+        sampleRate: captureMeta.sampleRate,
+        width: captureMeta.width,
+        samples: samples.subarray(visibleStartByte, visibleEndByte),
+        source: captureMeta.source,
+        importedAt: captureMeta.importedAt,
+        channelLabels: captureMeta.channelLabels,
+      });
+    });
+    return () => { cancelled = true; };
+  }, [activeCaptureId, captureMeta, panSample, zoomSamples]);
+
+  // Load probe for auto-detect whenever capture changes
+  useEffect(() => {
+    if (!activeCaptureId || !captureMeta) {
+      setProbeCapture(null);
+      return;
+    }
+    let cancelled = false;
+    historyRef.current.getProbe(activeCaptureId).then((samples) => {
+      if (cancelled) return;
+      setProbeCapture({
+        sampleRate: captureMeta.sampleRate,
+        width: captureMeta.width,
+        samples,
+        source: captureMeta.source,
+        importedAt: captureMeta.importedAt,
+        channelLabels: captureMeta.channelLabels,
+      });
+    });
+    return () => { cancelled = true; };
+  }, [activeCaptureId, captureMeta]);
+
+  const decoderDefaults = useMemo<DecoderDefaults>(() => inferDecoderDefaults(probeCapture ?? {
+    sampleRate: 12_000_000, width: 16, samples: new Uint8Array(0), source: "none", importedAt: new Date().toISOString(),
+  }), [probeCapture]);
   const [decoderState, setDecoderState] = useState({
     tab: decoderDefaults.tab,
     uart: decoderDefaults.uart,
@@ -77,46 +186,46 @@ export function WaveformLaView(props: Props) {
   const handleSingle = useCallback(() => setAcquireMode("single-armed"), []);
 
   const uartRows = useMemo(() => {
-    if (!capture || decoderState.tab !== "uart" || !decoderState.uart) return [];
-    return decodeUartChunk(capture.samples, capture.sampleRate, decoderState.uart.baud, decoderState.uart.ch);
-  }, [capture, decoderState]);
+    if (!windowedCapture || decoderState.tab !== "uart" || !decoderState.uart) return [];
+    return decodeUartChunk(windowedCapture.samples, windowedCapture.sampleRate, decoderState.uart.baud, decoderState.uart.ch);
+  }, [windowedCapture, decoderState]);
   const i2cRows = useMemo(() => {
-    if (!capture || decoderState.tab !== "i2c" || !decoderState.i2c) return [];
-    return decodeI2C(capture.samples, capture.sampleRate, decoderState.i2c.scl, decoderState.i2c.sda);
-  }, [capture, decoderState]);
+    if (!windowedCapture || decoderState.tab !== "i2c" || !decoderState.i2c) return [];
+    return decodeI2C(windowedCapture.samples, windowedCapture.sampleRate, decoderState.i2c.scl, decoderState.i2c.sda);
+  }, [windowedCapture, decoderState]);
   const spiRows = useMemo(() => {
-    if (!capture || decoderState.tab !== "spi" || !decoderState.spi) return [];
-    return decodeSPI(capture.samples, capture.sampleRate, decoderState.spi.mosi, decoderState.spi.miso, decoderState.spi.sck, decoderState.spi.cs, decoderState.spi.mode, decoderState.spi.bits, decoderState.spi.csActiveLow);
-  }, [capture, decoderState]);
+    if (!windowedCapture || decoderState.tab !== "spi" || !decoderState.spi) return [];
+    return decodeSPI(windowedCapture.samples, windowedCapture.sampleRate, decoderState.spi.mosi, decoderState.spi.miso, decoderState.spi.sck, decoderState.spi.cs, decoderState.spi.mode, decoderState.spi.bits, decoderState.spi.csActiveLow);
+  }, [windowedCapture, decoderState]);
   const canRows = useMemo(() => {
-    if (!capture || decoderState.tab !== "can" || !decoderState.can) return [];
-    return decodeCAN(capture.samples, capture.sampleRate, decoderState.can.ch, decoderState.can.baud);
-  }, [capture, decoderState]);
+    if (!windowedCapture || decoderState.tab !== "can" || !decoderState.can) return [];
+    return decodeCAN(windowedCapture.samples, windowedCapture.sampleRate, decoderState.can.ch, decoderState.can.baud);
+  }, [windowedCapture, decoderState]);
   const oneWireRows = useMemo(() => {
-    if (!capture || decoderState.tab !== "onewire" || !decoderState.onewire) return [];
-    return decodeOneWire(capture.samples, capture.sampleRate, decoderState.onewire.ch);
-  }, [capture, decoderState]);
+    if (!windowedCapture || decoderState.tab !== "onewire" || !decoderState.onewire) return [];
+    return decodeOneWire(windowedCapture.samples, windowedCapture.sampleRate, decoderState.onewire.ch);
+  }, [windowedCapture, decoderState]);
   const swdRows = useMemo(() => {
-    if (!capture || decoderState.tab !== "swd" || !decoderState.swd) return [];
-    return decodeSWD(capture.samples, capture.sampleRate, decoderState.swd.swdio, decoderState.swd.swclk);
-  }, [capture, decoderState]);
+    if (!windowedCapture || decoderState.tab !== "swd" || !decoderState.swd) return [];
+    return decodeSWD(windowedCapture.samples, windowedCapture.sampleRate, decoderState.swd.swdio, decoderState.swd.swclk);
+  }, [windowedCapture, decoderState]);
   const jtagRows = useMemo(() => {
-    if (!capture || decoderState.tab !== "jtag" || !decoderState.jtag) return [];
-    return decodeJTAG(capture.samples, capture.sampleRate, decoderState.jtag.tck, decoderState.jtag.tms, decoderState.jtag.tdi, decoderState.jtag.tdo);
-  }, [capture, decoderState]);
+    if (!windowedCapture || decoderState.tab !== "jtag" || !decoderState.jtag) return [];
+    return decodeJTAG(windowedCapture.samples, windowedCapture.sampleRate, decoderState.jtag.tck, decoderState.jtag.tms, decoderState.jtag.tdi, decoderState.jtag.tdo);
+  }, [windowedCapture, decoderState]);
   const modbusRows = useMemo(() => {
-    if (!capture || decoderState.tab !== "modbus" || !decoderState.modbus) return [];
-    return decodeModbus(capture.samples, capture.sampleRate, decoderState.modbus.ch, decoderState.modbus.baud, decoderState.modbus.parity);
-  }, [capture, decoderState]);
+    if (!windowedCapture || decoderState.tab !== "modbus" || !decoderState.modbus) return [];
+    return decodeModbus(windowedCapture.samples, windowedCapture.sampleRate, decoderState.modbus.ch, decoderState.modbus.baud, decoderState.modbus.parity);
+  }, [windowedCapture, decoderState]);
 
-  const totalSamples = useMemo(() => Math.floor((capture?.samples.length ?? 0) / ((capture?.width ?? 8) === 16 ? 2 : 1)), [capture]);
+  const totalSamples = useMemo(() => captureMeta?.totalSamples ?? 0, [captureMeta]);
   const handleZoomIn = useCallback(() => {
     const zoom = zoomSamples ?? totalSamples;
-    setZoomSamples(Math.max(10, zoom * 0.8));
+    setZoomSamples(Math.round(Math.max(10, zoom * 0.8)));
   }, [zoomSamples, totalSamples]);
   const handleZoomOut = useCallback(() => {
     const zoom = zoomSamples ?? totalSamples;
-    const next = zoom * 1.25;
+    const next = Math.round(zoom * 1.25);
     setZoomSamples(next >= totalSamples ? null : next);
   }, [zoomSamples, totalSamples]);
   const handleFit = useCallback(() => {
@@ -137,13 +246,19 @@ export function WaveformLaView(props: Props) {
     } else {
       loaded = parseLaCsv(await file.text()); // default CSV importer for .csv and unknown text
     }
-    setCapture(loaded);
+    fullCaptureRef.current = loaded;
+    const id = await historyRef.current.ingest(loaded);
+    const meta = await historyRef.current.getMeta(id);
+    setActiveCaptureId(id);
+    setCaptureMeta(meta);
     setSampleRate(loaded.sampleRate);
     setWidth(loaded.width);
+    setZoomSamples(null);
+    setPanSample(0);
     if (fileInputRef.current) fileInputRef.current.value = "";
   }, []);
 
-  const handlePattern = useCallback(() => {
+  const handlePattern = useCallback(async () => {
     if (isRunning) return;
     const rate = 1_000_000;
     const samples = generateLaTestPattern(rate, 1);
@@ -155,15 +270,30 @@ export function WaveformLaView(props: Props) {
       importedAt: new Date().toISOString(),
       channelLabels: ["UART_TX", "I2C_SCL", "I2C_SDA", "SPI_MOSI", "SPI_MISO", "SPI_SCK", "SPI_CS"],
     };
-    setCapture(loaded);
+    fullCaptureRef.current = loaded;
+    const id = await historyRef.current.ingest(loaded);
+    const meta = await historyRef.current.getMeta(id);
+    setActiveCaptureId(id);
+    setCaptureMeta(meta);
     setSampleRate(rate);
     setWidth(8);
+    setZoomSamples(null);
+    setPanSample(0);
   }, [isRunning]);
 
-  const handleExport = useCallback(() => {
-    if (!capture) return;
-    downloadLaCapture(capture, `capture-${capture.sampleRate / 1e6}MHz-${capture.width}bit.csv`);
-  }, [capture]);
+  const handleExport = useCallback(async () => {
+    if (!activeCaptureId || !captureMeta) return;
+    const fullSamples = await historyRef.current.getWindow(activeCaptureId, 0, captureMeta.totalSamples);
+    const fullCapture: LaCapture = {
+      sampleRate: captureMeta.sampleRate,
+      width: captureMeta.width,
+      samples: fullSamples,
+      source: captureMeta.source,
+      importedAt: captureMeta.importedAt,
+      channelLabels: captureMeta.channelLabels,
+    };
+    downloadLaCapture(fullCapture, `capture-${captureMeta.sampleRate / 1e6}MHz-${captureMeta.width}bit.csv`);
+  }, [activeCaptureId, captureMeta]);
 
   if (useLegacy) {
     return (
@@ -179,7 +309,7 @@ export function WaveformLaView(props: Props) {
           </button>
         </div>
         <div className="flex-1 min-h-0">
-          <WaveformLaLegacyView {...props} capture={capture} />
+          <WaveformLaLegacyView {...props} capture={windowedCapture} />
         </div>
       </div>
     );
@@ -211,9 +341,9 @@ export function WaveformLaView(props: Props) {
           Single
         </button>
         <span className="text-fob-text-dim">{acquireMode}</span>
-        {capture && (
+        {captureMeta && (
           <span className="text-fob-text-dim">
-            {capture.samples.length.toLocaleString()} samples @ {(capture.sampleRate / 1e6).toFixed(1)} MHz
+            {captureMeta.totalSamples.toLocaleString()} samples @ {(captureMeta.sampleRate / 1e6).toFixed(1)} MHz
           </span>
         )}
         <div className="flex-1" />
@@ -232,7 +362,7 @@ export function WaveformLaView(props: Props) {
         </button>
         <button
           onClick={handleExport}
-          disabled={!capture}
+          disabled={!activeCaptureId}
           className="px-2 py-1 rounded text-xs bg-fob-surface border border-fob-border hover:bg-fob-border disabled:text-fob-text-dim"
         >
           Export
@@ -260,18 +390,19 @@ export function WaveformLaView(props: Props) {
           <div className="flex items-center gap-2 px-2 py-1 bg-fob-surface border border-fob-border rounded text-xs shrink-0">
             <span className="text-fob-text-dim">Waveform</span>
             <div className="flex-1" />
-            <button onClick={handleFit} disabled={!capture} className="px-2 py-0.5 rounded bg-fob-surface hover:bg-fob-border disabled:text-fob-text-dim" title="Fit entire capture">Fit</button>
-            <button onClick={handleZoomOut} disabled={!capture} className="px-2 py-0.5 rounded bg-fob-surface hover:bg-fob-border disabled:text-fob-text-dim" title="Zoom out">−</button>
-            <button onClick={handleZoomIn} disabled={!capture} className="px-2 py-0.5 rounded bg-fob-surface hover:bg-fob-border disabled:text-fob-text-dim" title="Zoom in">+</button>
-            <span className="text-fob-text-dim w-24 text-right">{capture ? `${(zoomSamples ?? totalSamples).toLocaleString()} smp` : "—"}</span>
+            <button onClick={handleFit} disabled={!windowedCapture} className="px-2 py-0.5 rounded bg-fob-surface hover:bg-fob-border disabled:text-fob-text-dim" title="Fit entire capture">Fit</button>
+            <button onClick={handleZoomOut} disabled={!windowedCapture} className="px-2 py-0.5 rounded bg-fob-surface hover:bg-fob-border disabled:text-fob-text-dim" title="Zoom out">−</button>
+            <button onClick={handleZoomIn} disabled={!windowedCapture} className="px-2 py-0.5 rounded bg-fob-surface hover:bg-fob-border disabled:text-fob-text-dim" title="Zoom in">+</button>
+            <span className="text-fob-text-dim w-24 text-right">{windowedCapture ? `${(zoomSamples ?? totalSamples).toLocaleString()} smp` : "—"}</span>
           </div>
           {/* Main waveform canvas with decoder annotations */}
           <div className="flex-1 rounded border border-fob-border overflow-hidden bg-fob-surface min-h-0 min-w-0 select-none">
-            {capture && capture.samples.length > 0 ? (
+            {windowedCapture && windowedCapture.samples.length > 0 ? (
               <LaCanvas
-                samples={capture.samples}
-                sampleRate={capture.sampleRate}
-                width={capture.width}
+                samples={windowedCapture.samples}
+                totalSamples={totalSamples}
+                sampleRate={windowedCapture.sampleRate}
+                width={windowedCapture.width}
                 channels={channels}
                 zoomSamples={zoomSamples}
                 panSample={panSample}
@@ -307,7 +438,7 @@ export function WaveformLaView(props: Props) {
           {/* Bottom decoders panel */}
           <div className="h-40 rounded border border-fob-border overflow-hidden bg-fob-surface shrink-0 min-w-0">
             <LaDecodersPanel
-              capture={capture}
+              capture={windowedCapture}
               sampleRate={sampleRate}
               running={isRunning}
               suggestedTab={decoderDefaults.tab}
@@ -350,7 +481,7 @@ export function WaveformLaView(props: Props) {
               cursorB={cursorB}
               onCursorAChange={setCursorA}
               onCursorBChange={setCursorB}
-              totalSamples={capture?.samples.length ?? 0}
+              totalSamples={captureMeta?.totalSamples ?? 0}
             />
           </CollapsibleSection>
         </div>
