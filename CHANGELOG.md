@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.1-rc20] — 2026-07-04
+
+### Added
+- **WaveForge LA — trigger indicator**
+  - The first matching trigger edge in the current capture is now shown as a green dashed line on the main waveform.
+  - A small "T" label appears at the trigger position; an arrow appears at the left/right edge when the trigger is outside the visible window.
+
 ## [0.9.1-rc19] — 2026-07-04
 
 ### Added

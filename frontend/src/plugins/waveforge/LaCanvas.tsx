@@ -31,6 +31,7 @@ interface Props {
   showCursors?: boolean;
   cursorA?: number;
   cursorB?: number;
+  triggerSample?: number;
   onPanChange?: (pan: number) => void;
   onZoomChange?: (zoom: number | null) => void;
 }
@@ -324,6 +325,37 @@ export function LaCanvas(props: Props) {
         ctx.fillText(`Δt ${formatTime(Math.abs(props.cursorB - props.cursorA) / props.sampleRate)}`, xA + 2, 24);
       }
     }
+
+    // Trigger indicator
+    if (props.triggerSample !== undefined) {
+      const t = props.triggerSample;
+      const x = LABEL_WIDTH + ((t - pan) / zoom) * plotW;
+      const inView = t >= pan && t <= pan + zoom;
+      const color = "#22c55e";
+      if (inView) {
+        ctx.strokeStyle = color;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = color;
+        ctx.font = "10px monospace";
+        ctx.textAlign = "left";
+        ctx.textBaseline = "top";
+        ctx.fillText("T", x + 2, 2);
+      } else {
+        ctx.fillStyle = color;
+        const atLeft = t < pan;
+        const ax = atLeft ? LABEL_WIDTH + 8 : W - 8;
+        const ay = RULER_H + 6;
+        ctx.beginPath();
+        if (atLeft) {
+          ctx.moveTo(ax + 6, ay); ctx.lineTo(ax, ay + 4); ctx.lineTo(ax + 6, ay + 8);
+        } else {
+          ctx.moveTo(ax - 6, ay); ctx.lineTo(ax, ay + 4); ctx.lineTo(ax - 6, ay + 8);
+        }
+        ctx.fill();
+      }
+    }
   }, [props, totalSamples]);
 
   const drawRef = useRef(draw);
@@ -339,7 +371,7 @@ export function LaCanvas(props: Props) {
 
   useEffect(() => {
     scheduleDraw();
-  }, [scheduleDraw, props.samples, props.channels, props.cursorA, props.cursorB]);
+  }, [scheduleDraw, props.samples, props.channels, props.cursorA, props.cursorB, props.triggerSample]);
 
   useEffect(() => {
     const handleResize = () => scheduleDraw();
