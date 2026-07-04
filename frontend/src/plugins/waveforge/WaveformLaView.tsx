@@ -111,6 +111,28 @@ export function WaveformLaView(props: Props) {
   }, [capture, decoderState]);
 
   const totalSamples = useMemo(() => Math.floor((capture?.samples.length ?? 0) / ((capture?.width ?? 8) === 16 ? 2 : 1)), [capture]);
+
+  const triggerSample = useMemo(() => {
+    if (!trigger.enabled || !capture || capture.samples.length === 0) return undefined;
+    const bps = capture.width === 16 ? 2 : 1;
+    const total = Math.floor(capture.samples.length / bps);
+    const channel = trigger.channel;
+    let prevBit = -1;
+    for (let s = 0; s < total; s++) {
+      const off = s * bps;
+      const lo = capture.samples[off] ?? 0;
+      const hi = bps === 2 ? (capture.samples[off + 1] ?? 0) : 0;
+      const v = (hi << 8) | lo;
+      const bit = (v >> channel) & 1;
+      if (prevBit !== -1) {
+        if (trigger.edge === "rise" && prevBit === 0 && bit === 1) return s;
+        if (trigger.edge === "fall" && prevBit === 1 && bit === 0) return s;
+        if (trigger.edge === "both" && prevBit !== bit) return s;
+      }
+      prevBit = bit;
+    }
+    return undefined;
+  }, [capture, trigger]);
   const handleZoomIn = useCallback(() => {
     const zoom = zoomSamples ?? totalSamples;
     setZoomSamples(Math.max(10, zoom * 0.8));
@@ -296,6 +318,7 @@ export function WaveformLaView(props: Props) {
                 showCursors={showCursors}
                 cursorA={cursorA.sample}
                 cursorB={cursorB.sample}
+                triggerSample={triggerSample}
                 onPanChange={setPanSample}
                 onZoomChange={setZoomSamples}
               />
