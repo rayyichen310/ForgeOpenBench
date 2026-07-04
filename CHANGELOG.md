@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.9.1-rc23] — 2026-07-04
+
+### Changed
+- **WaveForge LA — UX quick-wins after agent review**
+  - Sidebar is now channels-only; channels are shown as a compact vertical list.
+  - Faded vertical gridlines and added a distinct pinned background for the left channel label column.
+  - Increased minimum channel row height for better breathing room.
+  - Cursor readout moved to a bottom measurement rail to avoid overlapping traces.
+  - Decoder panel tabs restyled as clear pill buttons; decoded rows have more padding and line height.
+  - Top action buttons (Import, Export, Pattern, Legacy) are larger and easier to hit.
+
 ## [0.9.1-rc22] — 2026-07-04
 
 ### Added

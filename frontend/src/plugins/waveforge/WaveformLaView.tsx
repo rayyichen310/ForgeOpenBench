@@ -420,28 +420,28 @@ export function WaveformLaView(props: Props) {
         />
         <button
           onClick={() => fileInputRef.current?.click()}
-          className="px-2 py-1 rounded text-xs bg-fob-surface border border-fob-border hover:bg-fob-border"
+          className="px-3 py-1.5 rounded text-sm bg-fob-surface border border-fob-border hover:bg-fob-border"
         >
           Import
         </button>
         <button
           onClick={handleExport}
           disabled={!activeCaptureId}
-          className="px-2 py-1 rounded text-xs bg-fob-surface border border-fob-border hover:bg-fob-border disabled:text-fob-text-dim"
+          className="px-3 py-1.5 rounded text-sm bg-fob-surface border border-fob-border hover:bg-fob-border disabled:text-fob-text-dim"
         >
           Export
         </button>
         <button
           onClick={handlePattern}
           disabled={isRunning}
-          className="px-2 py-1 rounded text-xs bg-fob-surface border border-fob-border hover:bg-fob-border disabled:text-fob-text-dim"
+          className="px-3 py-1.5 rounded text-sm bg-fob-blue text-fob-accent-text hover:bg-fob-blue/80 disabled:bg-fob-surface disabled:text-fob-text-dim"
           title="Load synthetic UART/I2C/SPI capture"
         >
           Pattern
         </button>
         <button
           onClick={() => setUseLegacy(true)}
-          className="px-2 py-1 rounded text-xs bg-fob-surface border border-fob-border hover:bg-fob-border"
+          className="px-3 py-1.5 rounded text-sm bg-fob-surface border border-fob-border hover:bg-fob-border"
         >
           Legacy
         </button>

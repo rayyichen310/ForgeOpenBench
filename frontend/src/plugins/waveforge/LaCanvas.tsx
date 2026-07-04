@@ -43,6 +43,7 @@ interface Props {
 const LABEL_WIDTH = DEFAULT_LABEL_WIDTH;
 const CH_GAP = 4;
 const RULER_H = 22;
+const MIN_ROW_H = 44;
 
 function formatTime(s: number): string {
   if (!isFinite(s)) return "—";
@@ -99,7 +100,7 @@ export function LaCanvas(props: Props) {
     const used = props.channels.filter(c => c.visible);
     const count = Math.max(used.length, 1);
     const plotH = h - RULER_H - CH_GAP;
-    const rowH = plotH / count;
+    const rowH = Math.max(MIN_ROW_H, plotH / count);
     const y = RULER_H + CH_GAP + idx * rowH + rowH * 0.5;
     return { y, rowH };
   };
@@ -158,27 +159,38 @@ export function LaCanvas(props: Props) {
       ctx.fillText(formatTime(s / props.sampleRate), x, RULER_H / 2);
     }
 
-    // Grid
+    // Label column background
+    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--fob-surface").trim() || "#141520";
+    ctx.fillRect(0, RULER_H, LABEL_WIDTH, H - RULER_H);
+    ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--fob-border").trim() || "#2a2d3e";
+    ctx.beginPath();
+    ctx.moveTo(LABEL_WIDTH, RULER_H);
+    ctx.lineTo(LABEL_WIDTH, H);
+    ctx.stroke();
+
+    // Faint vertical gridlines
     ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--fob-border").trim() || "#2a2d3e";
     ctx.lineWidth = 1;
+    ctx.globalAlpha = 0.4;
     ctx.beginPath();
-    for (let i = 0; i <= divCount; i++) {
+    for (let i = 1; i < divCount; i++) {
       const x = LABEL_WIDTH + (plotW * i) / divCount;
       ctx.moveTo(x, RULER_H);
       ctx.lineTo(x, H);
     }
     ctx.stroke();
+    ctx.globalAlpha = 1;
 
     // Channel traces
     visible.forEach((ch, i) => {
       const { y, rowH } = getChannelY(i, H);
       const color = ch.enabled ? ch.color : CHANNEL_COLORS[ch.id];
-      ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--fob-text-dim").trim() || "#6b7280";
-      ctx.font = "10px monospace";
+      ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--fob-text").trim() || "#e5e7eb";
+      ctx.font = "bold 10px monospace";
       ctx.textAlign = "right";
       ctx.textBaseline = "middle";
       const label = props.channelLabels?.[ch.id] || ch.label || `D${ch.id}`;
-      ctx.fillText(label, LABEL_WIDTH - 6, y);
+      ctx.fillText(label, LABEL_WIDTH - 8, y);
 
       ctx.strokeStyle = color;
       ctx.lineWidth = ch.enabled ? 2 : 1;
@@ -331,26 +343,30 @@ export function LaCanvas(props: Props) {
       ctx.beginPath(); ctx.moveTo(xA, 0); ctx.lineTo(xA, H); ctx.stroke();
       ctx.strokeStyle = "#3b82f6";
       ctx.beginPath(); ctx.moveTo(xB, 0); ctx.lineTo(xB, H); ctx.stroke();
-      ctx.fillStyle = "#e5e7eb";
-      ctx.font = "10px monospace";
-      ctx.textAlign = "left";
-      ctx.fillText(`A ${formatTime(props.cursorA / props.sampleRate)}`, xA + 2, 12);
-      ctx.fillText(`B ${formatTime(props.cursorB / props.sampleRate)}`, xB + 2, H - 4);
-      if (props.cursorA !== props.cursorB) {
-        ctx.fillText(`Δt ${formatTime(Math.abs(props.cursorB - props.cursorA) / props.sampleRate)}`, xA + 2, 24);
-      }
 
-      // Floating readout
+      // Measurement rail at the bottom
+      const railH = 18;
+      const railY = H - railH - 2;
       const readout = `A ${formatTime(props.cursorA / props.sampleRate)}   B ${formatTime(props.cursorB / props.sampleRate)}   Δt ${formatTime(Math.abs(props.cursorB - props.cursorA) / props.sampleRate)}`;
       ctx.font = "10px monospace";
-      const rw = ctx.measureText(readout).width + 10;
-      ctx.fillStyle = "rgba(11, 12, 21, 0.85)";
-      ctx.fillRect(LABEL_WIDTH + 4, 4, rw, 18);
+      const rw = ctx.measureText(readout).width + 12;
+      ctx.fillStyle = "rgba(11, 12, 21, 0.9)";
+      ctx.fillRect(LABEL_WIDTH + 4, railY, rw, railH);
       ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--fob-border").trim() || "#2a2d3e";
-      ctx.strokeRect(LABEL_WIDTH + 4.5, 4.5, rw - 1, 17);
+      ctx.strokeRect(LABEL_WIDTH + 4.5, railY + 0.5, rw - 1, railH - 1);
       ctx.fillStyle = "#e5e7eb";
+      ctx.textAlign = "left";
       ctx.textBaseline = "top";
-      ctx.fillText(readout, LABEL_WIDTH + 9, 8);
+      ctx.fillText(readout, LABEL_WIDTH + 10, railY + 4);
+
+      // Small markers at the rail for each cursor
+      ctx.fillStyle = "#ef4444";
+      ctx.font = "bold 9px monospace";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      ctx.fillText("A", xA, railY + 3);
+      ctx.fillStyle = "#3b82f6";
+      ctx.fillText("B", xB, railY + 3);
     }
 
     // Trigger indicator
@@ -365,10 +381,10 @@ export function LaCanvas(props: Props) {
         ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
         ctx.setLineDash([]);
         ctx.fillStyle = color;
-        ctx.font = "10px monospace";
+        ctx.font = "bold 10px monospace";
         ctx.textAlign = "left";
         ctx.textBaseline = "top";
-        ctx.fillText("T", x + 2, 2);
+        ctx.fillText("T", x + 2, RULER_H + 4);
       } else {
         ctx.fillStyle = color;
         const atLeft = t < pan;

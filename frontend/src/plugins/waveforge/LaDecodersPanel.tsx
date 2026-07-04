@@ -128,7 +128,7 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
           <button
             key={t}
             onClick={() => setTab(t)}
-            className={`px-2 py-0.5 rounded font-bold uppercase ${tab === t ? "bg-fob-orange text-fob-accent-text" : "bg-fob-surface hover:bg-fob-border text-fob-text-dim"}`}
+            className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wide border transition-colors ${tab === t ? "bg-fob-orange text-fob-accent-text border-fob-orange" : "bg-fob-surface border-fob-border hover:bg-fob-border text-fob-text-dim"}`}
           >
             {t}
           </button>
@@ -164,14 +164,14 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
               {Array.from({ length: 16 }, (_, i) => <option key={i} value={i}>D{i}</option>)}
             </select>
           </div>
-          <div className="flex-1 overflow-y-auto font-mono text-[11px] px-2 py-1 space-y-0">
+          <div className="flex-1 overflow-y-auto font-mono text-[11px] px-3 py-2 space-y-1">
             {uartRows.length === 0 ? (
               <div className="text-fob-text-dim text-center mt-4">
                 {running ? `Listening on D${uart.ch} @ ${uart.baud.toLocaleString()} baud...` : "Load a capture or pattern to decode UART"}
               </div>
             ) : (
               uartRows.map((r, i) => (
-                <div key={i} className={`flex gap-3 leading-5 ${r.error ? "text-fob-red" : "text-fob-text"}`}>
+                <div key={i} className={`flex gap-3 leading-6 ${r.error ? "text-fob-red" : "text-fob-text"}`}>
                   <span className="text-fob-text-dim w-16 shrink-0">{fmt(r.ts)}</span>
                   <span className="text-fob-text-dim w-6 shrink-0">D{uart.ch}</span>
                   <span className="font-bold w-14 shrink-0 text-fob-yellow">0x{r.byte.toString(16).padStart(2, "0").toUpperCase()}</span>
@@ -206,14 +206,14 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
               <option value={8}>8-bit</option>
             </select>
           </div>
-          <div className="flex-1 overflow-y-auto font-mono text-[11px] px-2 py-1 space-y-0">
+          <div className="flex-1 overflow-y-auto font-mono text-[11px] px-3 py-2 space-y-1">
             {i2cRows.length === 0 ? (
               <div className="text-fob-text-dim text-center mt-4">
                 {running ? "Stop capture to decode I2C" : "No I2C frames — check SCL/SDA channels"}
               </div>
             ) : (
               i2cRows.map((r, i) => (
-                <div key={i} className="flex gap-3 leading-5 text-fob-text">
+                <div key={i} className="flex gap-3 leading-6 text-fob-text">
                   <span className="text-fob-text-dim w-16 shrink-0">{fmt(r.ts)}</span>
                   <span className={`w-20 shrink-0 ${r.type === "start" || r.type === "repeated-start" ? "text-fob-green" : r.type === "stop" ? "text-fob-red" : r.type === "ack" ? "text-fob-green" : r.type === "nack" ? "text-fob-red" : "text-fob-yellow"}`}>
                     {r.type === "byte" && r.addr !== undefined ? `ADDR ${r.addr.toString(16).padStart(2, "0").toUpperCase()}${r.rw === "read" ? "R" : "W"}`
@@ -269,14 +269,14 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
               CS active low
             </label>
           </div>
-          <div className="flex-1 overflow-y-auto font-mono text-[11px] px-2 py-1 space-y-0">
+          <div className="flex-1 overflow-y-auto font-mono text-[11px] px-3 py-2 space-y-1">
             {spiRows.length === 0 ? (
               <div className="text-fob-text-dim text-center mt-4">
                 {running ? "Stop capture to decode SPI" : "No SPI frames — check channel assignments and mode"}
               </div>
             ) : (
               spiRows.map((r, i) => (
-                <div key={i} className="flex gap-3 leading-5 text-fob-text">
+                <div key={i} className="flex gap-3 leading-6 text-fob-text">
                   <span className="text-fob-text-dim w-16 shrink-0">{fmt(r.ts)}</span>
                   <span className="text-fob-blue shrink-0">MOSI 0x{r.mosi?.toString(16).padStart(spi.bits / 4, "0").toUpperCase() ?? "--"}</span>
                   <span className="text-fob-green shrink-0">MISO 0x{r.miso?.toString(16).padStart(spi.bits / 4, "0").toUpperCase() ?? "--"}</span>
@@ -302,14 +302,14 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
               {[125000, 250000, 500000, 800000, 1000000].map(b => <option key={b} value={b}>{(b / 1000).toFixed(0)}k</option>)}
             </select>
           </div>
-          <div className="flex-1 overflow-y-auto font-mono text-[11px] px-2 py-1 space-y-0">
+          <div className="flex-1 overflow-y-auto font-mono text-[11px] px-3 py-2 space-y-1">
             {canRows.length === 0 ? (
               <div className="text-fob-text-dim text-center mt-4">
                 {running ? "Stop capture to decode CAN" : "No CAN frames — check channel and baud rate"}
               </div>
             ) : (
               canRows.map((r, i) => (
-                <div key={i} className={`flex gap-3 leading-5 ${r.error ? "text-fob-red" : "text-fob-text"}`}>
+                <div key={i} className={`flex gap-3 leading-6 ${r.error ? "text-fob-red" : "text-fob-text"}`}>
                   <span className="text-fob-text-dim w-16 shrink-0">{fmt(r.ts)}</span>
                   <span className="text-fob-blue shrink-0">{r.extended ? "Ext" : "Std"}</span>
                   <span className="text-fob-yellow shrink-0">ID 0x{r.id.toString(16).toUpperCase()}</span>
@@ -333,14 +333,14 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
               {Array.from({ length: 16 }, (_, i) => <option key={i} value={i}>D{i}</option>)}
             </select>
           </div>
-          <div className="flex-1 overflow-y-auto font-mono text-[11px] px-2 py-1 space-y-0">
+          <div className="flex-1 overflow-y-auto font-mono text-[11px] px-3 py-2 space-y-1">
             {oneWireRows.length === 0 ? (
               <div className="text-fob-text-dim text-center mt-4">
                 {running ? "Stop capture to decode 1-Wire" : "No 1-Wire traffic — check channel"}
               </div>
             ) : (
               oneWireRows.map((r, i) => (
-                <div key={i} className="flex gap-3 leading-5 text-fob-text">
+                <div key={i} className="flex gap-3 leading-6 text-fob-text">
                   <span className="text-fob-text-dim w-16 shrink-0">{fmt(r.ts)}</span>
                   <span className="text-fob-blue shrink-0">{r.type.toUpperCase()}</span>
                   {r.value !== undefined && r.type === "byte" && (
@@ -368,14 +368,14 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
               {Array.from({ length: 16 }, (_, i) => <option key={i} value={i}>D{i}</option>)}
             </select>
           </div>
-          <div className="flex-1 overflow-y-auto font-mono text-[11px] px-2 py-1 space-y-0">
+          <div className="flex-1 overflow-y-auto font-mono text-[11px] px-3 py-2 space-y-1">
             {swdRows.length === 0 ? (
               <div className="text-fob-text-dim text-center mt-4">
                 {running ? "Stop capture to decode SWD" : "No SWD traffic — check DIO/CLK channels"}
               </div>
             ) : (
               swdRows.map((r, i) => (
-                <div key={i} className="flex gap-3 leading-5 text-fob-text">
+                <div key={i} className="flex gap-3 leading-6 text-fob-text">
                   <span className="text-fob-text-dim w-16 shrink-0">{fmt(r.ts)}</span>
                   <span className="text-fob-blue shrink-0">{r.type.toUpperCase()}</span>
                   {r.type === "request" && (
@@ -421,14 +421,14 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
               {Array.from({ length: 16 }, (_, i) => <option key={i} value={i}>D{i}</option>)}
             </select>
           </div>
-          <div className="flex-1 overflow-y-auto font-mono text-[11px] px-2 py-1 space-y-0">
+          <div className="flex-1 overflow-y-auto font-mono text-[11px] px-3 py-2 space-y-1">
             {jtagRows.length === 0 ? (
               <div className="text-fob-text-dim text-center mt-4">
                 {running ? "Stop capture to decode JTAG" : "No JTAG traffic — check TCK/TMS/TDI/TDO channels"}
               </div>
             ) : (
               jtagRows.map((r, i) => (
-                <div key={i} className="flex gap-3 leading-5 text-fob-text">
+                <div key={i} className="flex gap-3 leading-6 text-fob-text">
                   <span className="text-fob-text-dim w-16 shrink-0">{fmt(r.ts)}</span>
                   <span className="text-fob-blue shrink-0">{r.type.toUpperCase()}</span>
                   {r.type === "state" && <span className="text-fob-yellow shrink-0">{r.state}</span>}
@@ -469,14 +469,14 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
               <option value="none">None</option>
             </select>
           </div>
-          <div className="flex-1 overflow-y-auto font-mono text-[11px] px-2 py-1 space-y-0">
+          <div className="flex-1 overflow-y-auto font-mono text-[11px] px-3 py-2 space-y-1">
             {modbusRows.length === 0 ? (
               <div className="text-fob-text-dim text-center mt-4">
                 {running ? "Stop capture to decode Modbus" : "No Modbus traffic — check channel/baud/parity"}
               </div>
             ) : (
               modbusRows.map((r, i) => (
-                <div key={i} className="flex gap-3 leading-5 text-fob-text">
+                <div key={i} className="flex gap-3 leading-6 text-fob-text">
                   <span className="text-fob-text-dim w-16 shrink-0">{fmt(r.ts)}</span>
                   <span className="text-fob-blue shrink-0">{r.type.toUpperCase()}</span>
                   <span className="text-fob-yellow shrink-0">ADDR {r.addr}</span>
