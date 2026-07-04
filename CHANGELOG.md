@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.1-rc24] — 2026-07-04
+
+### Added
+- **WaveForge LA — canvas packet overlays**
+  - Decoded protocol data is now rendered as structured packet bars directly on the waveform for UART, I2C, SPI, CAN, 1-Wire, SWD, JTAG, and Modbus.
+  - Error packets (NACK, parity, CRC) are highlighted in red.
+  - Hovering a packet shows a tooltip; clicking a packet centers and zooms the viewport onto that event.
+
 ## [0.9.1-rc23] — 2026-07-04
 
 ### Changed
