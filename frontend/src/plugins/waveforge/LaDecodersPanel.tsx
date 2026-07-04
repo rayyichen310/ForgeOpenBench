@@ -123,12 +123,12 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defau
   return (
     <div className="flex flex-col h-full min-h-0">
       {/* Tabs */}
-      <div className="flex items-center gap-1 px-2 py-1 bg-fob-surface border-b border-fob-border text-xs shrink-0">
+      <div className="flex flex-wrap items-center gap-1 px-2 py-1 bg-fob-surface border-b border-fob-border text-xs shrink-0">
         {(["uart", "i2c", "spi", "can", "onewire", "swd", "jtag", "modbus"] as DecoderTab[]).map(t => (
           <button
             key={t}
             onClick={() => setTab(t)}
-            className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wide border transition-colors ${tab === t ? "bg-fob-orange text-fob-accent-text border-fob-orange" : "bg-fob-surface border-fob-border hover:bg-fob-border text-fob-text-dim"}`}
+            className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide border whitespace-nowrap transition-colors ${tab === t ? "bg-fob-orange text-fob-accent-text border-fob-orange" : "bg-fob-surface border-fob-border hover:bg-fob-border text-fob-text-dim"}`}
           >
             {t}
           </button>
