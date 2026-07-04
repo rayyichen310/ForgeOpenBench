@@ -38,8 +38,13 @@ function fmt(ts: number) {
 }
 
 export function LaDecodersPanel({ frozenBuf, sampleRate, capture, running, defaultUart, defaultI2c, defaultSpi, defaultCan, defaultOneWire, defaultSwd, defaultJtag, defaultModbus, suggestedTab, onChange }: Props) {
-  const effectiveBuf = capture?.samples ?? frozenBuf ?? null;
-  const effectiveRate = capture?.sampleRate ?? sampleRate ?? 0;
+  const [debouncedCapture, setDebouncedCapture] = useState(capture);
+  useEffect(() => {
+    const id = setTimeout(() => setDebouncedCapture(capture), 150);
+    return () => clearTimeout(id);
+  }, [capture]);
+  const effectiveBuf = debouncedCapture?.samples ?? frozenBuf ?? null;
+  const effectiveRate = debouncedCapture?.sampleRate ?? sampleRate ?? 0;
   const [tab, setTab] = useState<DecoderTab>(suggestedTab ?? "uart");
   const [uart, setUart] = useState<UartConfig>(defaultUart ?? { baud: 115200, ch: 0 });
   const [i2c, setI2c] = useState<I2cConfig>(defaultI2c ?? { scl: 1, sda: 2, addrBits: 7 });
