@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.9.1-rc22] — 2026-07-04
+
+### Added
+- **WaveForge LA — interaction polish**
+  - Cursor and trigger toggle buttons are now in the waveform toolbar for constant access.
+  - Right-click context menu on the waveform: fit entire capture, place cursor A, place cursor B.
+  - Protocol labels (e.g., `UART_TX`, `I2C_SCL`) are shown on the canvas when the capture provides them.
+  - Keyboard shortcuts: `0` fit, `+`/`−` zoom, arrow keys pan.
+
 ## [0.9.1-rc21] — 2026-07-04
 
 ### Added
