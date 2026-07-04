@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.1-rc18] — 2026-07-04
+
+### Fixed
+- **WaveForge LA — zoom-to-cursor regression**
+  - Fixed stale canvas render that drew the previous windowed buffer with the new viewport, causing a flat or jittery waveform after zooming.
+  - Draw scheduling now fires on sample/channel/cursor changes, ensuring the latest windowed slice is used.
+  - Pan and zoom values are rounded to integer samples; slice byte indices are rounded to avoid fractional TypedArray offsets.
+
 ## [0.9.1-rc16] — 2026-07-03
 
 ### Fixed
