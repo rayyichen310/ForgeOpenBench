@@ -6,9 +6,7 @@ import { LaOverview } from "./LaOverview";
 import { CollapsibleSection } from "./CollapsibleSection";
 import { ChannelsPanel } from "./ChannelsPanel";
 import { AcquirePanel } from "./AcquirePanel";
-import { LaCursorsPanel } from "./LaCursorsPanel";
 import { LaDecodersPanel } from "./LaDecodersPanel";
-import { LaTriggerPanel } from "./LaTriggerPanel";
 import { loadChannels, saveChannels } from "./laChannelConfig";
 import type { LaChannel } from "./laChannelConfig";
 import type { LaAcquireMode } from "./laAcquireModes";
@@ -573,20 +571,6 @@ export function WaveformLaView(props: Props) {
               onSampleRateChange={setSampleRate}
               onWidthChange={setWidth}
               onTimebaseChange={setTimebaseIdx}
-            />
-          </CollapsibleSection>
-          <CollapsibleSection title="Trigger">
-            <LaTriggerPanel trigger={trigger} onChange={setTrigger} disabled={false} />
-          </CollapsibleSection>
-          <CollapsibleSection title="Cursors">
-            <LaCursorsPanel
-              enabled={showCursors}
-              onToggle={setShowCursors}
-              cursorA={cursorA}
-              cursorB={cursorB}
-              onCursorAChange={setCursorA}
-              onCursorBChange={setCursorB}
-              totalSamples={captureMeta?.totalSamples ?? 0}
             />
           </CollapsibleSection>
         </div>
