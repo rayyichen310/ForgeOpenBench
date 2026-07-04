@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useMemo, useEffect } from "react";
 import type { UsbTransport } from "./UsbTransport";
 import { WaveformLaLegacyView } from "./WaveformLaLegacyView";
 import { LaCanvas } from "./LaCanvas";
+import { LaOverview } from "./LaOverview";
 import { CollapsibleSection } from "./CollapsibleSection";
 import { ChannelsPanel } from "./ChannelsPanel";
 import { AcquirePanel } from "./AcquirePanel";
@@ -435,6 +436,18 @@ export function WaveformLaView(props: Props) {
               </div>
             )}
           </div>
+          {/* Viewport overview / minimap */}
+          {capture && capture.samples.length > 0 && (
+            <LaOverview
+              samples={capture.samples}
+              width={capture.width}
+              channels={channels}
+              zoomSamples={zoomSamples}
+              panSample={panSample}
+              totalSamples={totalSamples}
+              onPanChange={setPanSample}
+            />
+          )}
           {/* Bottom decoders panel */}
           <div className="h-40 rounded border border-fob-border overflow-hidden bg-fob-surface shrink-0 min-w-0">
             <LaDecodersPanel

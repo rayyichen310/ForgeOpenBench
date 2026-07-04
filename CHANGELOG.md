@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.9.1-rc19] — 2026-07-04
+
+### Added
+- **WaveForge LA — viewport overview / minimap**
+  - A small overview track is rendered below the main waveform showing the full capture.
+  - The current visible window is highlighted with a blue rectangle.
+  - Click on the overview to jump the viewport to that position.
+  - Drag the highlight to pan the viewport.
+
 ## [0.9.1-rc18] — 2026-07-04
 
 ### Fixed
