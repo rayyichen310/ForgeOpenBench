@@ -5,7 +5,7 @@
 
 export const MAX_TICKER = 200; // max ticker rows to keep
 
-export interface TickerRow { ts: number; byte: number; sample: number; error: boolean; parityOk?: boolean; }
+export interface TickerRow { ts: number; byte: number; sample: number; endSample: number; error: boolean; parityOk?: boolean; }
 
 export interface I2CFrame {
   startSample: number;
@@ -456,7 +456,8 @@ export function decodeUartChunk(
       const stopBit = at(1 + dataBits + parityOffset);
       const error = stopBit !== 1 || parityOk === false;
       const absSample = baseSample + fs;
-      rows.push({ ts: absSample / sampleRate, byte: v, sample: absSample, error, parityOk });
+      const endSample = absSample + Math.round((1 + dataBits + parityOffset + stopBits) * spb);
+      rows.push({ ts: absSample / sampleRate, byte: v, sample: absSample, endSample, error, parityOk });
       // Advance to the middle of the stop bit, then scan for the next idle -> start edge.
       // This avoids landing exactly on the next start bit when spb is non-integer.
       i = Math.round(fs + (dataBits + parityOffset + 1 + stopBits / 2) * spb);
