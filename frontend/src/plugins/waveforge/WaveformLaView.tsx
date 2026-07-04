@@ -184,6 +184,10 @@ export function WaveformLaView(props: Props) {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
       if (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable) return;
+      if (!captureMeta) return;
+      const total = captureMeta.totalSamples;
+      const zoom = zoomSamples ?? total;
+      const pan = panSample;
       if (e.key === "c" || e.key === "C") {
         e.preventDefault();
         setShowCursors(true);
@@ -196,11 +200,30 @@ export function WaveformLaView(props: Props) {
         setCursorB(prev => ({ ...prev, sample }));
       } else if (e.key === "Escape") {
         setShowCursors(false);
+      } else if (e.key === "0") {
+        e.preventDefault();
+        setZoomSamples(null);
+        setPanSample(0);
+      } else if (e.key === "+" || e.key === "=") {
+        e.preventDefault();
+        setZoomSamples(Math.round(Math.max(10, zoom * 0.8)));
+      } else if (e.key === "-" || e.key === "_") {
+        e.preventDefault();
+        const next = Math.round(zoom * 1.25);
+        setZoomSamples(next >= total ? null : next);
+      } else if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        const step = Math.max(1, Math.floor(zoom * 0.1));
+        setPanSample(Math.max(0, pan - step));
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        const step = Math.max(1, Math.floor(zoom * 0.1));
+        setPanSample(Math.min(Math.max(0, total - zoom), pan + step));
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [captureMeta, zoomSamples, panSample]);
 
   const [useLegacy, setUseLegacy] = useState(false);
 
@@ -438,10 +461,27 @@ export function WaveformLaView(props: Props) {
           <div className="flex items-center gap-2 px-2 py-1 bg-fob-surface border border-fob-border rounded text-xs shrink-0">
             <span className="text-fob-text-dim">Waveform</span>
             <div className="flex-1" />
-            <button onClick={handleFit} disabled={!windowedCapture} className="px-2 py-0.5 rounded bg-fob-surface hover:bg-fob-border disabled:text-fob-text-dim" title="Fit entire capture">Fit</button>
-            <button onClick={handleZoomOut} disabled={!windowedCapture} className="px-2 py-0.5 rounded bg-fob-surface hover:bg-fob-border disabled:text-fob-text-dim" title="Zoom out">−</button>
-            <button onClick={handleZoomIn} disabled={!windowedCapture} className="px-2 py-0.5 rounded bg-fob-surface hover:bg-fob-border disabled:text-fob-text-dim" title="Zoom in">+</button>
+            <button onClick={handleFit} disabled={!windowedCapture} className="px-2 py-0.5 rounded bg-fob-surface hover:bg-fob-border disabled:text-fob-text-dim" title="Fit entire capture (0)">Fit</button>
+            <button onClick={handleZoomOut} disabled={!windowedCapture} className="px-2 py-0.5 rounded bg-fob-surface hover:bg-fob-border disabled:text-fob-text-dim" title="Zoom out (−)">−</button>
+            <button onClick={handleZoomIn} disabled={!windowedCapture} className="px-2 py-0.5 rounded bg-fob-surface hover:bg-fob-border disabled:text-fob-text-dim" title="Zoom in (+)">+</button>
             <span className="text-fob-text-dim w-24 text-right">{windowedCapture ? `${(zoomSamples ?? totalSamples).toLocaleString()} smp` : "—"}</span>
+            <div className="w-px h-4 bg-fob-border mx-1" />
+            <button
+              onClick={() => setShowCursors(s => !s)}
+              disabled={!windowedCapture}
+              className={`px-2 py-0.5 rounded text-xs border ${showCursors ? "bg-fob-blue text-white border-fob-blue" : "bg-fob-surface border-fob-border hover:bg-fob-border"} disabled:text-fob-text-dim`}
+              title="Toggle cursors (C/V)"
+            >
+              Cursors
+            </button>
+            <button
+              onClick={() => setTrigger(t => ({ ...t, enabled: !t.enabled }))}
+              disabled={!windowedCapture}
+              className={`px-2 py-0.5 rounded text-xs border ${trigger.enabled ? "bg-fob-green text-white border-fob-green" : "bg-fob-surface border-fob-border hover:bg-fob-border"} disabled:text-fob-text-dim`}
+              title="Toggle trigger"
+            >
+              Trigger
+            </button>
           </div>
           {/* Main waveform canvas with decoder annotations */}
           <div className="flex-1 rounded border border-fob-border overflow-hidden bg-fob-surface min-h-0 min-w-0 select-none">
@@ -475,6 +515,7 @@ export function WaveformLaView(props: Props) {
                 cursorA={cursorA.sample}
                 cursorB={cursorB.sample}
                 triggerSample={triggerSample}
+                channelLabels={fullCaptureRef.current?.channelLabels}
                 onPanChange={setPanSample}
                 onZoomChange={setZoomSamples}
                 onCursorAChange={sample => setCursorA(prev => ({ ...prev, sample }))}

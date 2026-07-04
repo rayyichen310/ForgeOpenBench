@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback } from "react";
+import { useRef, useEffect, useCallback, useState } from "react";
 import type { LaChannel } from "./laChannelConfig";
 import { CHANNEL_COLORS, DEFAULT_LABEL_WIDTH } from "./laChannelConfig";
 import type { DecoderTab, TickerRow, I2CFrame, SPIFrame, CANFrame, OneWireFrame, SWDFrame, JTAGFrame, ModbusFrame } from "./laDecoders";
@@ -32,6 +32,7 @@ interface Props {
   cursorA?: number;
   cursorB?: number;
   triggerSample?: number;
+  channelLabels?: string[];
   onPanChange?: (pan: number) => void;
   onZoomChange?: (zoom: number | null) => void;
   onCursorAChange?: (sample: number) => void;
@@ -91,6 +92,8 @@ export function LaCanvas(props: Props) {
   useEffect(() => { onCursorARef.current = props.onCursorAChange; }, [props.onCursorAChange]);
   useEffect(() => { onCursorBRef.current = props.onCursorBChange; }, [props.onCursorBChange]);
   useEffect(() => { onMouseSampleRef.current = props.onMouseSampleChange; }, [props.onMouseSampleChange]);
+
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; sample: number } | null>(null);
 
   const getChannelY = (idx: number, h: number) => {
     const used = props.channels.filter(c => c.visible);
@@ -174,7 +177,8 @@ export function LaCanvas(props: Props) {
       ctx.font = "10px monospace";
       ctx.textAlign = "right";
       ctx.textBaseline = "middle";
-      ctx.fillText(ch.label || `D${ch.id}`, LABEL_WIDTH - 6, y);
+      const label = props.channelLabels?.[ch.id] || ch.label || `D${ch.id}`;
+      ctx.fillText(label, LABEL_WIDTH - 6, y);
 
       ctx.strokeStyle = color;
       ctx.lineWidth = ch.enabled ? 2 : 1;
@@ -394,7 +398,7 @@ export function LaCanvas(props: Props) {
 
   useEffect(() => {
     scheduleDraw();
-  }, [scheduleDraw, props.samples, props.channels, props.cursorA, props.cursorB, props.triggerSample]);
+  }, [scheduleDraw, props.samples, props.channels, props.cursorA, props.cursorB, props.triggerSample, props.showCursors, props.channelLabels]);
 
   useEffect(() => {
     const handleResize = () => scheduleDraw();
@@ -524,8 +528,30 @@ export function LaCanvas(props: Props) {
     }
   };
 
+  const handleContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const x = e.nativeEvent.offsetX;
+    const y = e.nativeEvent.offsetY;
+    const sample = sampleFromX(x);
+    setContextMenu({ x, y, sample });
+  };
+  const handleMenuDismiss = () => setContextMenu(null);
+  const handleMenuFit = () => {
+    onZoomRef.current?.(null);
+    onPanRef.current?.(0);
+    setContextMenu(null);
+  };
+  const handleMenuCursorA = () => {
+    if (contextMenu) onCursorARef.current?.(Math.max(0, Math.min(contextMenu.sample, totalSamples - 1)));
+    setContextMenu(null);
+  };
+  const handleMenuCursorB = () => {
+    if (contextMenu) onCursorBRef.current?.(Math.max(0, Math.min(contextMenu.sample, totalSamples - 1)));
+    setContextMenu(null);
+  };
+
   return (
-    <div ref={containerRef} className="relative w-full h-full overflow-hidden">
+    <div ref={containerRef} className="relative w-full h-full overflow-hidden" onClick={handleMenuDismiss}>
       <canvas
         ref={canvasRef}
         className="w-full h-full cursor-crosshair"
@@ -534,7 +560,19 @@ export function LaCanvas(props: Props) {
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
+        onContextMenu={handleContextMenu}
       />
+      {contextMenu && (
+        <div
+          className="absolute z-20 rounded border border-fob-border bg-fob-surface shadow text-xs py-1 min-w-[120px]"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onClick={e => e.stopPropagation()}
+        >
+          <button onClick={handleMenuFit} className="w-full text-left px-3 py-1 hover:bg-fob-border text-fob-text">Fit entire capture</button>
+          <button onClick={handleMenuCursorA} className="w-full text-left px-3 py-1 hover:bg-fob-border text-fob-text">Cursor A here</button>
+          <button onClick={handleMenuCursorB} className="w-full text-left px-3 py-1 hover:bg-fob-border text-fob-text">Cursor B here</button>
+        </div>
+      )}
     </div>
   );
 }
