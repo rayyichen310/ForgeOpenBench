@@ -173,11 +173,34 @@ export function WaveformLaView(props: Props) {
     setDecoderState({ tab: decoderDefaults.tab, uart: decoderDefaults.uart, i2c: decoderDefaults.i2c, spi: decoderDefaults.spi, can: decoderDefaults.can, onewire: decoderDefaults.onewire, swd: decoderDefaults.swd, jtag: decoderDefaults.jtag, modbus: decoderDefaults.modbus });
   }, [decoderDefaults]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const mouseSampleRef = useRef(0);
 
   const handleChannelsChange = (next: LaChannel[]) => {
     saveChannels(next);
     setChannels(next);
   };
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable) return;
+      if (e.key === "c" || e.key === "C") {
+        e.preventDefault();
+        setShowCursors(true);
+        const sample = mouseSampleRef.current;
+        setCursorA(prev => ({ ...prev, sample }));
+      } else if (e.key === "v" || e.key === "V") {
+        e.preventDefault();
+        setShowCursors(true);
+        const sample = mouseSampleRef.current;
+        setCursorB(prev => ({ ...prev, sample }));
+      } else if (e.key === "Escape") {
+        setShowCursors(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const [useLegacy, setUseLegacy] = useState(false);
 
@@ -454,6 +477,9 @@ export function WaveformLaView(props: Props) {
                 triggerSample={triggerSample}
                 onPanChange={setPanSample}
                 onZoomChange={setZoomSamples}
+                onCursorAChange={sample => setCursorA(prev => ({ ...prev, sample }))}
+                onCursorBChange={sample => setCursorB(prev => ({ ...prev, sample }))}
+                onMouseSampleChange={sample => { mouseSampleRef.current = sample; }}
               />
             ) : (
               <div className="w-full h-full flex items-center justify-center text-fob-text-dim text-xs">

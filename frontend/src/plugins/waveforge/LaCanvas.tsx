@@ -34,6 +34,9 @@ interface Props {
   triggerSample?: number;
   onPanChange?: (pan: number) => void;
   onZoomChange?: (zoom: number | null) => void;
+  onCursorAChange?: (sample: number) => void;
+  onCursorBChange?: (sample: number) => void;
+  onMouseSampleChange?: (sample: number) => void;
 }
 
 const LABEL_WIDTH = DEFAULT_LABEL_WIDTH;
@@ -69,6 +72,8 @@ export function LaCanvas(props: Props) {
   const wheelRafRef = useRef(0);
   const dragDxRef = useRef(0);
   const dragRafRef = useRef(0);
+  const cursorDragRef = useRef<"A" | "B" | null>(null);
+  const mouseSampleRef = useRef(0);
 
   useEffect(() => {
     zoomRef.current = props.zoomSamples;
@@ -80,6 +85,12 @@ export function LaCanvas(props: Props) {
   }, [props.panSample]);
   useEffect(() => { onZoomRef.current = props.onZoomChange; }, [props.onZoomChange]);
   useEffect(() => { onPanRef.current = props.onPanChange; }, [props.onPanChange]);
+  const onCursorARef = useRef(props.onCursorAChange);
+  const onCursorBRef = useRef(props.onCursorBChange);
+  const onMouseSampleRef = useRef(props.onMouseSampleChange);
+  useEffect(() => { onCursorARef.current = props.onCursorAChange; }, [props.onCursorAChange]);
+  useEffect(() => { onCursorBRef.current = props.onCursorBChange; }, [props.onCursorBChange]);
+  useEffect(() => { onMouseSampleRef.current = props.onMouseSampleChange; }, [props.onMouseSampleChange]);
 
   const getChannelY = (idx: number, h: number) => {
     const used = props.channels.filter(c => c.visible);
@@ -324,6 +335,18 @@ export function LaCanvas(props: Props) {
       if (props.cursorA !== props.cursorB) {
         ctx.fillText(`Δt ${formatTime(Math.abs(props.cursorB - props.cursorA) / props.sampleRate)}`, xA + 2, 24);
       }
+
+      // Floating readout
+      const readout = `A ${formatTime(props.cursorA / props.sampleRate)}   B ${formatTime(props.cursorB / props.sampleRate)}   Δt ${formatTime(Math.abs(props.cursorB - props.cursorA) / props.sampleRate)}`;
+      ctx.font = "10px monospace";
+      const rw = ctx.measureText(readout).width + 10;
+      ctx.fillStyle = "rgba(11, 12, 21, 0.85)";
+      ctx.fillRect(LABEL_WIDTH + 4, 4, rw, 18);
+      ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--fob-border").trim() || "#2a2d3e";
+      ctx.strokeRect(LABEL_WIDTH + 4.5, 4.5, rw - 1, 17);
+      ctx.fillStyle = "#e5e7eb";
+      ctx.textBaseline = "top";
+      ctx.fillText(readout, LABEL_WIDTH + 9, 8);
     }
 
     // Trigger indicator
@@ -423,12 +446,60 @@ export function LaCanvas(props: Props) {
     return () => canvas.removeEventListener("wheel", handleWheel);
   }, [totalSamples]);
 
+  const sampleFromX = (x: number) => {
+    const zoom = zoomRef.current ?? totalSamples;
+    const pan = panRef.current ?? 0;
+    const plotW = Math.max(1, (canvasRef.current?.clientWidth || 0) - LABEL_WIDTH);
+    const px = Math.max(0, Math.min(x - LABEL_WIDTH, plotW));
+    return Math.round(pan + (px / plotW) * zoom);
+  };
+
+  const cursorNearX = (x: number) => {
+    if (!props.showCursors) return null;
+    const zoom = zoomRef.current ?? totalSamples;
+    const pan = panRef.current ?? 0;
+    const plotW = Math.max(1, (canvasRef.current?.clientWidth || 0) - LABEL_WIDTH);
+    const threshold = 6;
+    if (props.cursorA !== undefined) {
+      const xA = LABEL_WIDTH + ((props.cursorA - pan) / zoom) * plotW;
+      if (Math.abs(x - xA) < threshold) return "A";
+    }
+    if (props.cursorB !== undefined) {
+      const xB = LABEL_WIDTH + ((props.cursorB - pan) / zoom) * plotW;
+      if (Math.abs(x - xB) < threshold) return "B";
+    }
+    return null;
+  };
+
   const handleMouseDown = (e: React.MouseEvent) => {
+    const x = e.nativeEvent.offsetX;
+    const near = cursorNearX(x);
+    if (near) {
+      cursorDragRef.current = near;
+      return;
+    }
     isPanningRef.current = true;
     panStartRef.current = { x: e.clientX, pan: panRef.current ?? 0 };
     dragDxRef.current = 0;
   };
   const handleMouseMove = (e: React.MouseEvent) => {
+    const x = e.nativeEvent.offsetX;
+    const sample = sampleFromX(x);
+    mouseSampleRef.current = sample;
+    onMouseSampleRef.current?.(sample);
+
+    const canvas = canvasRef.current;
+    if (canvas) {
+      canvas.style.cursor = cursorNearX(x) ? "ew-resize" : "crosshair";
+    }
+
+    if (cursorDragRef.current) {
+      const clamped = Math.max(0, Math.min(sample, totalSamples - 1));
+      if (cursorDragRef.current === "A") onCursorARef.current?.(clamped);
+      else onCursorBRef.current?.(clamped);
+      return;
+    }
+
     if (!isPanningRef.current || !panStartRef.current) return;
     dragDxRef.current = e.clientX - panStartRef.current.x;
     if (!dragRafRef.current) {
@@ -443,6 +514,7 @@ export function LaCanvas(props: Props) {
     }
   };
   const handleMouseUp = () => {
+    cursorDragRef.current = null;
     isPanningRef.current = false;
     panStartRef.current = null;
     dragDxRef.current = 0;

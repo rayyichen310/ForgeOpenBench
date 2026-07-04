@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.1-rc21] — 2026-07-04
+
+### Added
+- **WaveForge LA — cursor improvements**
+  - Cursors can now be dragged directly on the waveform (cursor changes to `ew-resize` near a cursor line).
+  - Added a floating readout box showing A time, B time, and Δt.
+  - Keyboard shortcuts: `C` places cursor A, `V` places cursor B, `Esc` hides cursors.
+
 ## [0.9.1-rc20] — 2026-07-04
 
 ### Added
