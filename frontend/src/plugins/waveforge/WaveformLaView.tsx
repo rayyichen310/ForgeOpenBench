@@ -5,7 +5,6 @@ import { LaCanvas } from "./LaCanvas";
 import { LaOverview } from "./LaOverview";
 import { CollapsibleSection } from "./CollapsibleSection";
 import { ChannelsPanel } from "./ChannelsPanel";
-import { AcquirePanel } from "./AcquirePanel";
 import { LaDecodersPanel } from "./LaDecodersPanel";
 import { loadChannels, saveChannels } from "./laChannelConfig";
 import type { LaChannel } from "./laChannelConfig";
@@ -35,8 +34,6 @@ interface Cursor {
 export function WaveformLaView(props: Props) {
   const [channels, setChannels] = useState<LaChannel[]>(loadChannels);
   const [sampleRate, setSampleRate] = useState(12_000_000);
-  const [width, setWidth] = useState<8 | 16>(16);
-  const [timebaseIdx, setTimebaseIdx] = useState(6);
   const [acquireMode, setAcquireMode] = useState<LaAcquireMode>("stopped");
   const [showCursors, setShowCursors] = useState(false);
   const [cursorA, setCursorA] = useState<Cursor>({ sample: 0, dragging: false });
@@ -321,7 +318,6 @@ export function WaveformLaView(props: Props) {
     setActiveCaptureId(id);
     setCaptureMeta(meta);
     setSampleRate(loaded.sampleRate);
-    setWidth(loaded.width);
     setZoomSamples(null);
     setPanSample(0);
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -345,7 +341,6 @@ export function WaveformLaView(props: Props) {
     setActiveCaptureId(id);
     setCaptureMeta(meta);
     setSampleRate(rate);
-    setWidth(8);
     setZoomSamples(null);
     setPanSample(0);
   }, [isRunning]);
@@ -562,16 +557,6 @@ export function WaveformLaView(props: Props) {
         <div className="w-72 flex flex-col gap-2 shrink-0 overflow-y-auto text-[11px] px-1 py-1">
           <CollapsibleSection title="Channels">
             <ChannelsPanel channels={channels} onChange={handleChannelsChange} />
-          </CollapsibleSection>
-          <CollapsibleSection title="Acquire">
-            <AcquirePanel
-              sampleRate={sampleRate}
-              width={width}
-              timebaseIdx={timebaseIdx}
-              onSampleRateChange={setSampleRate}
-              onWidthChange={setWidth}
-              onTimebaseChange={setTimebaseIdx}
-            />
           </CollapsibleSection>
         </div>
       </div>
