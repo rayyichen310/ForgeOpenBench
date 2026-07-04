@@ -10,6 +10,7 @@
   - Cursor readout moved to a bottom measurement rail to avoid overlapping traces.
   - Decoder panel tabs restyled as clear pill buttons; decoded rows have more padding and line height.
   - Top action buttons (Import, Export, Pattern, Legacy) are larger and easier to hit.
+  - Decoder panel capture updates are debounced (150 ms) so the waveform stays responsive during zoom/pan.
 
 ## [0.9.1-rc22] — 2026-07-04
 
