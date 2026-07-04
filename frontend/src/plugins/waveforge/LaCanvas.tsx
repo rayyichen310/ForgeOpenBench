@@ -78,8 +78,8 @@ export function LaCanvas(props: Props) {
   const mouseSampleRef = useRef(0);
 
   useEffect(() => {
-    zoomRef.current = props.zoomSamples;
-    wheelZoomRef.current = props.zoomSamples;
+    zoomRef.current = props.zoomSamples ?? null;
+    wheelZoomRef.current = props.zoomSamples ?? null;
   }, [props.zoomSamples]);
   useEffect(() => {
     panRef.current = props.panSample;
