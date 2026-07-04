@@ -41,6 +41,14 @@ export function WaveformLaView(props: Props) {
   const [trigger, setTrigger] = useState<LaTriggerConfig>({ enabled: false, channel: 0, edge: "rise" });
   const [zoomSamples, setZoomSamples] = useState<number | null>(null);
   const [panSample, setPanSample] = useState(0);
+  const handlePacketClick = (sample: number) => {
+    if (!captureMeta) return;
+    const total = captureMeta.totalSamples;
+    const currentZoom = zoomSamples ?? total;
+    const targetZoom = Math.min(Math.max(currentZoom, 200), total);
+    setZoomSamples(targetZoom === total ? null : targetZoom);
+    setPanSample(Math.max(0, Math.min(sample - targetZoom / 2, total - targetZoom)));
+  };
 
   // ── Time Machine: persistent chunked history buffer ──
   const historyRef = useRef(new LaHistoryBuffer());
@@ -514,6 +522,7 @@ export function WaveformLaView(props: Props) {
                 onCursorAChange={sample => setCursorA(prev => ({ ...prev, sample }))}
                 onCursorBChange={sample => setCursorB(prev => ({ ...prev, sample }))}
                 onMouseSampleChange={sample => { mouseSampleRef.current = sample; }}
+                onPacketClick={handlePacketClick}
               />
             ) : (
               <div className="w-full h-full flex items-center justify-center text-fob-text-dim text-xs">

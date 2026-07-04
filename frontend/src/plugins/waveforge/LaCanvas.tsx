@@ -38,6 +38,7 @@ interface Props {
   onCursorAChange?: (sample: number) => void;
   onCursorBChange?: (sample: number) => void;
   onMouseSampleChange?: (sample: number) => void;
+  onPacketClick?: (sample: number) => void;
 }
 
 const LABEL_WIDTH = DEFAULT_LABEL_WIDTH;
@@ -76,6 +77,8 @@ export function LaCanvas(props: Props) {
   const dragRafRef = useRef(0);
   const cursorDragRef = useRef<"A" | "B" | null>(null);
   const mouseSampleRef = useRef(0);
+  const overlayRectsRef = useRef<Array<{ x: number; y: number; w: number; h: number; sample: number; text: string }>>([]);
+  const [tooltip, setTooltip] = useState<{ x: number; y: number; text: string } | null>(null);
 
   useEffect(() => {
     zoomRef.current = props.zoomSamples ?? null;
@@ -90,9 +93,11 @@ export function LaCanvas(props: Props) {
   const onCursorARef = useRef(props.onCursorAChange);
   const onCursorBRef = useRef(props.onCursorBChange);
   const onMouseSampleRef = useRef(props.onMouseSampleChange);
+  const onPacketClickRef = useRef(props.onPacketClick);
   useEffect(() => { onCursorARef.current = props.onCursorAChange; }, [props.onCursorAChange]);
   useEffect(() => { onCursorBRef.current = props.onCursorBChange; }, [props.onCursorBChange]);
   useEffect(() => { onMouseSampleRef.current = props.onMouseSampleChange; }, [props.onMouseSampleChange]);
+  useEffect(() => { onPacketClickRef.current = props.onPacketClick; }, [props.onPacketClick]);
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; sample: number } | null>(null);
 
@@ -225,23 +230,31 @@ export function LaCanvas(props: Props) {
       ctx.globalAlpha = 1;
     });
 
-    // Decoder annotations
-    const drawBubble = (sample: number, chIdx: number, text: string, color: string) => {
-      if (sample < pan || sample > pan + zoom) return;
-      const x = LABEL_WIDTH + ((sample - pan) / zoom) * plotW;
+    // Packet overlays
+    overlayRectsRef.current = [];
+    const drawPacket = (startSample: number, endSample: number, chIdx: number, text: string, color: string, error = false) => {
+      if (endSample < pan || startSample > pan + zoom) return;
+      const x1 = LABEL_WIDTH + ((Math.max(startSample, pan) - pan) / zoom) * plotW;
+      const x2 = LABEL_WIDTH + ((Math.min(endSample, pan + zoom) - pan) / zoom) * plotW;
       const { y } = getChannelY(chIdx, H);
-      ctx.fillStyle = color + "18";
-      ctx.strokeStyle = color;
+      const h = 16;
+      const top = y - h / 2;
+      const w = Math.max(x2 - x1, 14);
+      ctx.fillStyle = error ? "rgba(239, 68, 68, 0.18)" : color + "18";
+      ctx.strokeStyle = error ? "#ef4444" : color;
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.roundRect(x + 2, y - 11, ctx.measureText(text).width + 8, 14, 3);
+      ctx.roundRect(x1, top, w, h, 4);
       ctx.fill();
       ctx.stroke();
-      ctx.fillStyle = color;
+      ctx.fillStyle = error ? "#ef4444" : color;
       ctx.font = "bold 9px monospace";
       ctx.textAlign = "left";
       ctx.textBaseline = "middle";
-      ctx.fillText(text, x + 6, y - 4);
+      if (w > 20) {
+        ctx.fillText(text, x1 + 4, y);
+      }
+      overlayRectsRef.current.push({ x: x1, y: top, w, h, sample: startSample, text });
     };
 
     if (props.decoderTab === "uart" && props.decoderRows) {
@@ -249,7 +262,7 @@ export function LaCanvas(props: Props) {
       if (chIdx >= 0) {
         const color = visible[chIdx]?.color || CHANNEL_COLORS[props.decoderChannel ?? 0];
         props.decoderRows.forEach(r => {
-          drawBubble(r.sample, chIdx, `0x${r.byte.toString(16).padStart(2, "0").toUpperCase()}`, color);
+          drawPacket(r.sample, r.endSample, chIdx, `0x${r.byte.toString(16).padStart(2, "0").toUpperCase()}`, color, r.error);
         });
       }
     }
@@ -260,11 +273,13 @@ export function LaCanvas(props: Props) {
       if (idx >= 0) {
         const color = visible[idx]?.color || CHANNEL_COLORS[props.decoderSda ?? 0];
         props.i2cRows.forEach(r => {
-          if (r.type === "byte" && r.addr !== undefined) {
-            drawBubble(r.startSample, idx, `A${r.addr.toString(16).padStart(2, "0")}${r.rw === "read" ? "R" : "W"}`, color);
-          } else if (r.type === "byte" && r.data !== undefined) {
-            drawBubble(r.startSample, idx, `0x${r.data.toString(16).padStart(2, "0")}`, color);
-          }
+          if (r.type === "start") drawPacket(r.startSample, r.endSample, idx, "START", color);
+          else if (r.type === "repeated-start") drawPacket(r.startSample, r.endSample, idx, "R-START", color);
+          else if (r.type === "stop") drawPacket(r.startSample, r.endSample, idx, "STOP", color);
+          else if (r.type === "byte" && r.addr !== undefined) drawPacket(r.startSample, r.endSample, idx, `A${r.addr.toString(16).padStart(2, "0")}${r.rw === "read" ? "R" : "W"}`, color);
+          else if (r.type === "byte" && r.data !== undefined) drawPacket(r.startSample, r.endSample, idx, `0x${r.data.toString(16).padStart(2, "0")}`, color);
+          else if (r.type === "ack") drawPacket(r.startSample, r.endSample, idx, "ACK", color);
+          else if (r.type === "nack") drawPacket(r.startSample, r.endSample, idx, "NACK", color, true);
         });
       }
     }
@@ -274,8 +289,8 @@ export function LaCanvas(props: Props) {
         const color = visible[chIdx]?.color || CHANNEL_COLORS[props.decoderMosi ?? 0];
         const digits = 8 / 4;
         props.spiRows.forEach(r => {
-          if (r.mosi !== undefined) drawBubble(r.startSample, chIdx, `M0x${r.mosi.toString(16).padStart(digits, "0").toUpperCase()}`, color);
-          else if (r.miso !== undefined) drawBubble(r.startSample, chIdx, `S0x${r.miso.toString(16).padStart(digits, "0").toUpperCase()}`, color);
+          if (r.mosi !== undefined) drawPacket(r.startSample, r.endSample, chIdx, `M0x${r.mosi.toString(16).padStart(digits, "0").toUpperCase()}`, color);
+          else if (r.miso !== undefined) drawPacket(r.startSample, r.endSample, chIdx, `S0x${r.miso.toString(16).padStart(digits, "0").toUpperCase()}`, color);
         });
       }
     }
@@ -284,11 +299,8 @@ export function LaCanvas(props: Props) {
       if (chIdx >= 0) {
         const color = visible[chIdx]?.color || CHANNEL_COLORS[props.decoderCan ?? 0];
         props.canRows.forEach(r => {
-          const label = r.extended ? `ExtID 0x${r.id.toString(16).toUpperCase()}` : `ID 0x${r.id.toString(16).toUpperCase()}`;
-          drawBubble(r.startSample, chIdx, label, color);
-          if (r.data.length > 0) {
-            drawBubble(r.endSample, chIdx, r.data.map(b => b.toString(16).padStart(2, "0").toUpperCase()).join(" "), color);
-          }
+          const label = `${r.extended ? "Ext" : "Std"} ID 0x${r.id.toString(16).toUpperCase()} ${r.data.map(b => b.toString(16).padStart(2, "0").toUpperCase()).join(" ")}`;
+          drawPacket(r.startSample, r.endSample, chIdx, label, color, r.error);
         });
       }
     }
@@ -297,9 +309,9 @@ export function LaCanvas(props: Props) {
       if (chIdx >= 0) {
         const color = visible[chIdx]?.color || CHANNEL_COLORS[props.decoderOneWire ?? 0];
         props.oneWireRows.forEach(r => {
-          if (r.type === "reset") drawBubble(r.startSample, chIdx, "RST", color);
-          else if (r.type === "presence") drawBubble(r.startSample, chIdx, "PRES", color);
-          else if (r.type === "byte" && r.value !== undefined) drawBubble(r.startSample, chIdx, `0x${r.value.toString(16).padStart(2, "0").toUpperCase()}`, color);
+          if (r.type === "reset") drawPacket(r.startSample, r.endSample, chIdx, "RST", color);
+          else if (r.type === "presence") drawPacket(r.startSample, r.endSample, chIdx, "PRES", color);
+          else if (r.type === "byte" && r.value !== undefined) drawPacket(r.startSample, r.endSample, chIdx, `0x${r.value.toString(16).padStart(2, "0").toUpperCase()}`, color);
         });
       }
     }
@@ -308,9 +320,9 @@ export function LaCanvas(props: Props) {
       if (chIdx >= 0) {
         const color = visible[chIdx]?.color || CHANNEL_COLORS[props.decoderSwd.swdio];
         props.swdRows.forEach(r => {
-          if (r.type === "reset") drawBubble(r.startSample, chIdx, "RST", color);
-          else if (r.type === "request") drawBubble(r.startSample, chIdx, `${r.read ? "R" : "W"}${r.apnDp === 1 ? "AP" : "DP"} 0x${r.addr!.toString(16)}`, color);
-          else if (r.type === "data" && r.data !== undefined) drawBubble(r.startSample, chIdx, `0x${r.data.toString(16).padStart(8, "0").toUpperCase()}`, color);
+          if (r.type === "reset") drawPacket(r.startSample, r.endSample, chIdx, "RST", color);
+          else if (r.type === "request") drawPacket(r.startSample, r.endSample, chIdx, `${r.read ? "R" : "W"}${r.apnDp === 1 ? "AP" : "DP"} 0x${r.addr!.toString(16)}`, color);
+          else if (r.type === "data" && r.data !== undefined) drawPacket(r.startSample, r.endSample, chIdx, `0x${r.data.toString(16).padStart(8, "0").toUpperCase()}`, color, r.ok === false);
         });
       }
     }
@@ -319,9 +331,9 @@ export function LaCanvas(props: Props) {
       if (tmsChIdx >= 0) {
         const color = visible[tmsChIdx]?.color || CHANNEL_COLORS[props.decoderJtag.tms];
         props.jtagRows.forEach(r => {
-          if (r.type === "reset") drawBubble(r.startSample, tmsChIdx, "RST", color);
-          else if (r.type === "state") drawBubble(r.startSample, tmsChIdx, r.state ?? "", color);
-          else if (r.type === "shift" && r.tdi !== undefined) drawBubble(r.startSample, tmsChIdx, `${r.register} 0x${r.tdi.toString(16).padStart(Math.ceil((r.bits ?? 1) / 4), "0").toUpperCase()}`, color);
+          if (r.type === "reset") drawPacket(r.startSample, r.endSample, tmsChIdx, "RST", color);
+          else if (r.type === "state") drawPacket(r.startSample, r.endSample, tmsChIdx, r.state ?? "", color);
+          else if (r.type === "shift" && r.tdi !== undefined) drawPacket(r.startSample, r.endSample, tmsChIdx, `${r.register} 0x${r.tdi.toString(16).padStart(Math.ceil((r.bits ?? 1) / 4), "0").toUpperCase()}`, color);
         });
       }
     }
@@ -330,7 +342,8 @@ export function LaCanvas(props: Props) {
       if (chIdx >= 0) {
         const color = visible[chIdx]?.color || CHANNEL_COLORS[props.decoderModbus.ch];
         props.modbusRows.forEach(r => {
-          drawBubble(r.startSample, chIdx, `A${r.addr} F${r.func.toString(16).padStart(2, "0").toUpperCase()}`, color);
+          const label = `A${r.addr} F${r.func.toString(16).padStart(2, "0").toUpperCase()} ${r.data.map(b => b.toString(16).padStart(2, "0").toUpperCase()).join(" ")}`;
+          drawPacket(r.startSample, r.endSample, chIdx, label, color, !r.crcOk);
         });
       }
     }
@@ -493,9 +506,15 @@ export function LaCanvas(props: Props) {
 
   const handleMouseDown = (e: React.MouseEvent) => {
     const x = e.nativeEvent.offsetX;
+    const y = e.nativeEvent.offsetY;
     const near = cursorNearX(x);
     if (near) {
       cursorDragRef.current = near;
+      return;
+    }
+    const hit = overlayRectsRef.current.find(r => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h);
+    if (hit) {
+      onPacketClickRef.current?.(hit.sample);
       return;
     }
     isPanningRef.current = true;
@@ -504,13 +523,17 @@ export function LaCanvas(props: Props) {
   };
   const handleMouseMove = (e: React.MouseEvent) => {
     const x = e.nativeEvent.offsetX;
+    const y = e.nativeEvent.offsetY;
     const sample = sampleFromX(x);
     mouseSampleRef.current = sample;
     onMouseSampleRef.current?.(sample);
 
+    const hit = overlayRectsRef.current.find(r => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h);
+    setTooltip(hit ? { x, y, text: hit.text } : null);
+
     const canvas = canvasRef.current;
     if (canvas) {
-      canvas.style.cursor = cursorNearX(x) ? "ew-resize" : "crosshair";
+      canvas.style.cursor = cursorNearX(x) ? "ew-resize" : hit ? "pointer" : "crosshair";
     }
 
     if (cursorDragRef.current) {
@@ -578,6 +601,14 @@ export function LaCanvas(props: Props) {
         onMouseLeave={handleMouseUp}
         onContextMenu={handleContextMenu}
       />
+      {tooltip && (
+        <div
+          className="absolute z-10 pointer-events-none px-2 py-1 rounded border border-fob-border bg-fob-surface text-xs text-fob-text shadow"
+          style={{ left: tooltip.x + 10, top: tooltip.y + 10 }}
+        >
+          {tooltip.text}
+        </div>
+      )}
       {contextMenu && (
         <div
           className="absolute z-20 rounded border border-fob-border bg-fob-surface shadow text-xs py-1 min-w-[120px]"
