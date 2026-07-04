@@ -488,10 +488,10 @@ export function WaveformLaView(props: Props) {
             )}
           </div>
           {/* Viewport overview / minimap */}
-          {capture && capture.samples.length > 0 && (
+          {fullCaptureRef.current && fullCaptureRef.current.samples.length > 0 && (
             <LaOverview
-              samples={capture.samples}
-              width={capture.width}
+              samples={fullCaptureRef.current.samples}
+              width={fullCaptureRef.current.width}
               channels={channels}
               zoomSamples={zoomSamples}
               panSample={panSample}
