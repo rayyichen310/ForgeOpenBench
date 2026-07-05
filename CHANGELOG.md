@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.9.1-rc25] — 2026-07-05
+
+### Added
+- **WaveForge LA — Time Machine persistent buffer**
+  - New chunked, persistent sample buffer backed by IndexedDB with RLE compression for long captures.
+  - Captures are split into configurable chunk windows and loaded on demand, reducing memory pressure for large imports.
+  - `LaHistoryBuffer` exposes async `ingest`, `createCapture`/`appendChunk`/`finalizeCapture`, and `getWindow` APIs.
+
+### Fixed
+- **WaveForge LA — import/pattern stability**
+  - Added a load-generation counter so stale imports can no longer overwrite the current capture.
+  - Old IndexedDB captures and in-memory refs are now explicitly cleared before loading a new capture, preventing the out-of-memory stalls seen when rapidly switching imports or generating the Pattern test capture.
+
 ## [0.9.1-rc24] — 2026-07-04
 
 ### Added
