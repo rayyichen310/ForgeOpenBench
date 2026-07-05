@@ -38,11 +38,12 @@ interface Props {
   modbusRows?: ModbusFrame[];
   onChange?: (state: { tab: DecoderTab; uart: UartConfig; i2c: I2cConfig; spi: SpiConfig; can: CanConfig; onewire: OneWireConfig; swd: SwdConfig; jtag: JtagConfig; modbus: ModbusConfig }) => void;
   onPacketClick?: (sample: number) => void;
+  onFrameNavigate?: (direction: "next" | "previous") => void;
 }
 
 interface TicketItem { sample: number; endSample: number; label: string; error: boolean; bitSamples?: number; }
 
-export function LaDecodersPanel({ frozenBuf, sampleRate, capture, panSample, zoomSamples, running, tab, defaultUart, defaultI2c, defaultSpi, defaultCan, defaultOneWire, defaultSwd, defaultJtag, defaultModbus, uartRows, i2cRows, spiRows, canRows, oneWireRows, swdRows, jtagRows, modbusRows, onChange, onPacketClick }: Props) {
+export function LaDecodersPanel({ frozenBuf, sampleRate, capture, panSample, zoomSamples, running, tab, defaultUart, defaultI2c, defaultSpi, defaultCan, defaultOneWire, defaultSwd, defaultJtag, defaultModbus, uartRows, i2cRows, spiRows, canRows, oneWireRows, swdRows, jtagRows, modbusRows, onChange, onPacketClick, onFrameNavigate }: Props) {
   const [debouncedCapture, setDebouncedCapture] = useState(capture);
   useEffect(() => {
     const id = setTimeout(() => setDebouncedCapture(capture), 150);
@@ -211,6 +212,8 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, panSample, zoo
               <option value={7}>7-bit</option>
               <option value={8}>8-bit</option>
             </select>
+            <button className="px-2 py-0.5 rounded border border-fob-border bg-fob-surface hover:bg-fob-border disabled:opacity-40" onClick={() => onFrameNavigate?.("previous")} disabled={!onFrameNavigate}>← Prev</button>
+            <button className="px-2 py-0.5 rounded border border-fob-border bg-fob-surface hover:bg-fob-border disabled:opacity-40" onClick={() => onFrameNavigate?.("next")} disabled={!onFrameNavigate}>Next →</button>
           </>
         )}
         {tab === "spi" && (

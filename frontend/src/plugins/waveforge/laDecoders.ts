@@ -592,6 +592,58 @@ export function decodeI2C(
   return rows;
 }
 
+export interface FrameSearchResult {
+  startSample: number;
+  endSample: number;
+  ts: number;
+  type?: string;
+}
+
+export async function findNearestI2CFrame(
+  getWindow: (startSample: number, sampleCount: number) => Promise<Uint8Array>,
+  sampleRate: number,
+  config: { scl: number; sda: number },
+  centerSample: number,
+  direction: "next" | "previous",
+  options?: { windowSize?: number; maxWindows?: number }
+): Promise<FrameSearchResult | null> {
+  const windowSize = options?.windowSize ?? 100_000;
+  const maxWindows = options?.maxWindows ?? 20;
+
+  let windowsChecked = 0;
+  let startSample = direction === "next" ? centerSample + 1 : Math.max(0, centerSample - windowSize);
+
+  while (windowsChecked < maxWindows) {
+    const count = windowSize;
+    const window = await getWindow(startSample, count);
+    if (window.length === 0) break;
+
+    const frames = decodeI2C(window, sampleRate, config.scl, config.sda);
+    if (direction === "next") {
+      for (const f of frames) {
+        const absStart = startSample + f.startSample;
+        if (absStart > centerSample) {
+          return { startSample: absStart, endSample: startSample + f.endSample, ts: f.ts, type: f.type };
+        }
+      }
+      startSample += windowSize;
+    } else {
+      let candidate: FrameSearchResult | null = null;
+      for (const f of frames) {
+        const absEnd = startSample + f.endSample;
+        if (absEnd < centerSample) {
+          candidate = { startSample: startSample + f.startSample, endSample: absEnd, ts: f.ts, type: f.type };
+        }
+      }
+      if (candidate) return candidate;
+      if (startSample === 0) break;
+      startSample = Math.max(0, startSample - windowSize);
+    }
+    windowsChecked++;
+  }
+  return null;
+}
+
 export function decodeSPI(
   samples: Uint8Array, sampleRate: number, mosiCh: number, misoCh: number,
   sckCh: number, csCh: number, mode: 0 | 1 | 2 | 3, bits: 8 | 16, csActiveLow: boolean

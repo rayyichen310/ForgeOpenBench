@@ -11,7 +11,7 @@ import type { LaChannel } from "./laChannelConfig";
 import type { LaAcquireMode } from "./laAcquireModes";
 import type { LaTriggerConfig } from "./laAcquireModes";
 import type { LaCapture, DecoderDefaults } from "./laDecoders";
-import { inferDecoderDefaults, generateLaTestPattern, decodeUartChunk, decodeI2C, decodeSPI, decodeCAN, decodeOneWire, decodeSWD, decodeJTAG, decodeModbus } from "./laDecoders";
+import { inferDecoderDefaults, generateLaTestPattern, decodeUartChunk, decodeI2C, decodeSPI, decodeCAN, decodeOneWire, decodeSWD, decodeJTAG, decodeModbus, findNearestI2CFrame } from "./laDecoders";
 import { parseLaCsv, parseLaJson, detectLaFormat, streamSigrokSr } from "./laImport";
 import { downloadLaCapture } from "./laExport";
 import { LaHistoryBuffer, type LaCaptureMeta } from "./LaHistoryBuffer";
@@ -227,6 +227,22 @@ export function WaveformLaView(props: Props) {
   useEffect(() => {
     setDecoderState({ tab: decoderDefaults.tab, uart: decoderDefaults.uart, i2c: decoderDefaults.i2c, spi: decoderDefaults.spi, can: decoderDefaults.can, onewire: decoderDefaults.onewire, swd: decoderDefaults.swd, jtag: decoderDefaults.jtag, modbus: decoderDefaults.modbus });
   }, [decoderDefaults]);
+
+  const handleFrameNavigate = useCallback(async (direction: "next" | "previous") => {
+    if (!activeCaptureId || !captureMeta || decoderState.tab !== "i2c" || !decoderState.i2c) return;
+    const total = captureMeta.totalSamples;
+    const centerSample = panSample + (zoomSamples ?? total) / 2;
+    const result = await findNearestI2CFrame(
+      (start, count) => historyRef.current.getWindow(activeCaptureId, start, count, 0),
+      captureMeta.sampleRate,
+      { scl: decoderState.i2c.scl, sda: decoderState.i2c.sda },
+      centerSample,
+      direction,
+      { windowSize: 100_000, maxWindows: 20 }
+    );
+    if (result) handlePacketClick(result.startSample);
+  }, [activeCaptureId, captureMeta, decoderState, panSample, zoomSamples]);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const mouseSampleRef = useRef(0);
   const loadGenerationRef = useRef(0);
@@ -731,6 +747,7 @@ export function WaveformLaView(props: Props) {
               modbusRows={modbusRows}
               onChange={setDecoderState}
               onPacketClick={handlePacketClick}
+              onFrameNavigate={handleFrameNavigate}
             />
           </div>
         </div>
