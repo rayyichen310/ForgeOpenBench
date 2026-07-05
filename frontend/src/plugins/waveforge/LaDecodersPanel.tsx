@@ -153,7 +153,7 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, panSample, zoo
     return items.filter(r => r.endSample > start && r.sample < end);
   }, [tab, uartRows, i2cRows, spiRows, canRows, oneWireRows, swdRows, jtagRows, modbusRows, panSample, zoomSamples, capture]);
 
-  return (
+  const jsx = (
     <div className="flex flex-col h-full min-h-0">
       {/* Tabs */}
       <div className="flex flex-wrap items-center gap-1 px-2 py-1 bg-fob-surface border-b border-fob-border text-xs shrink-0">
@@ -363,4 +363,6 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, panSample, zoo
       </div>
     </div>
   );
+
+  return jsx;
 }

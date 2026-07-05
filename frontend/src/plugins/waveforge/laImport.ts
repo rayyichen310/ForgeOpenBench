@@ -1,9 +1,9 @@
 import type { LaCapture } from "./laDecoders";
-import { parseSigrokSr } from "./sigrokSrParser";
+import { parseSigrokSr, streamSigrokSr } from "./sigrokSrParser";
 
 export type LaFileFormat = "fob-csv" | "fob-json" | "sigrok-sr" | "unknown";
 
-export { parseSigrokSr };
+export { parseSigrokSr, streamSigrokSr };
 
 export function detectLaFormat(name: string, contentType?: string): LaFileFormat {
   const lower = name.toLowerCase();

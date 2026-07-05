@@ -17,7 +17,7 @@ const OVERVIEW_H = 64;
 export function LaOverview(props: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const dragRef = useRef<{ x: number; pan: number } | null>(null);
+  const dragRef = useRef<{ x: number; pan: number; dragging: boolean } | null>(null);
 
   const totalSamples = props.totalSamples;
   const zoom = Math.max(1, props.zoomSamples ?? totalSamples);
@@ -60,27 +60,52 @@ export function LaOverview(props: Props) {
       ctx.globalAlpha = ch.enabled ? 1 : 0.4;
       ctx.beginPath();
 
-      let lastBit = -1;
-      for (let px = 0; px < cssW; px++) {
-        const s = Math.floor(px * sPerPx);
-        if (s >= totalSamples) break;
-        const off = s * bps;
+      const readBit = (sample: number) => {
+        const off = sample * bps;
         const lo = props.samples[off] ?? 0;
         const hi = bps === 2 ? (props.samples[off + 1] ?? 0) : 0;
         const v = (hi << 8) | lo;
-        const bit = (v >> ch.id) & 1;
+        return (v >> ch.id) & 1;
+      };
+      let lastBit = -1;
+      for (let px = 0; px < cssW; px++) {
+        const sStart = Math.floor(px * sPerPx);
+        const sEnd = Math.min(Math.floor((px + 1) * sPerPx), totalSamples);
+        if (sStart >= totalSamples) break;
+        if (sEnd <= sStart) continue;
+
+        const firstBit = readBit(sStart);
+        const lastBitPx = readBit(sEnd - 1);
+        let hasHigh = firstBit === 1 || lastBitPx === 1;
+        let hasLow = firstBit === 0 || lastBitPx === 0;
+        if (!hasHigh || !hasLow) {
+          const pxCount = sEnd - sStart;
+          const step = Math.max(1, Math.floor(pxCount / 32));
+          for (let s = sStart + step; s < sEnd - 1; s += step) {
+            if (readBit(s)) hasHigh = true;
+            else hasLow = true;
+            if (hasHigh && hasLow) break;
+          }
+        }
+
         const yHigh = y - rowH * 0.35;
         const yLow = y + rowH * 0.35;
-        const py = bit ? yHigh : yLow;
         if (lastBit === -1) {
-          ctx.moveTo(px, py);
-        } else if (bit !== lastBit) {
+          ctx.moveTo(px, firstBit ? yHigh : yLow);
+        } else if (firstBit !== lastBit) {
           ctx.lineTo(px, lastBit ? yHigh : yLow);
-          ctx.lineTo(px, py);
+          ctx.lineTo(px, firstBit ? yHigh : yLow);
         } else {
-          ctx.lineTo(px, py);
+          ctx.lineTo(px, firstBit ? yHigh : yLow);
         }
-        lastBit = bit;
+        if (hasHigh && hasLow) {
+          ctx.lineTo(px, yHigh);
+          ctx.lineTo(px, yLow);
+          ctx.lineTo(px, lastBitPx ? yHigh : yLow);
+          lastBit = lastBitPx;
+        } else {
+          lastBit = firstBit;
+        }
       }
       ctx.stroke();
       ctx.globalAlpha = 1;
@@ -111,15 +136,19 @@ export function LaOverview(props: Props) {
   const handlePointerDown = (e: React.PointerEvent) => {
     e.preventDefault();
     (e.target as Element).setPointerCapture(e.pointerId);
-    dragRef.current = { x: e.clientX, pan };
+    dragRef.current = { x: e.clientX, pan, dragging: false };
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
     if (!dragRef.current) return;
+    const dx = e.clientX - dragRef.current.x;
+    if (!dragRef.current.dragging) {
+      if (Math.abs(dx) < 10) return; // small movements are clicks, not drags
+      dragRef.current.dragging = true;
+    }
     const container = containerRef.current;
     if (!container) return;
     const cssW = container.clientWidth;
-    const dx = e.clientX - dragRef.current.x;
     const dSamples = (dx / cssW) * totalSamples;
     const newPan = Math.max(0, Math.min(dragRef.current.pan + dSamples, totalSamples - zoom));
     props.onPanChange?.(newPan);
@@ -127,7 +156,7 @@ export function LaOverview(props: Props) {
 
   const handlePointerUp = (e: React.PointerEvent) => {
     if (!dragRef.current) return;
-    const wasClick = Math.abs(e.clientX - dragRef.current.x) < 3;
+    const wasClick = !dragRef.current.dragging;
     if (wasClick) {
       const rect = containerRef.current?.getBoundingClientRect();
       if (rect) {

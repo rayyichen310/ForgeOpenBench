@@ -9,8 +9,9 @@
  * All APIs are async. Consumers (WaveformLaView, decoders) await windows.
  */
 
-import { LaHistoryStore, type LaCaptureMeta } from "./laHistoryStore";
+import { LaHistoryStore, type LaCaptureMeta, type LaChunkRecord } from "./laHistoryStore";
 import type { LaCapture } from "./laDecoders";
+import { rleEncode, rleDecode, type RleFormat } from "./laRle";
 
 const DEFAULT_CHUNK_SIZE = 1_000_000; // samples per chunk
 const DEFAULT_MAX_CACHE = 20; // max chunks kept in hot cache
@@ -67,12 +68,14 @@ export class LaHistoryBuffer {
       const byteEnd = endSample * bps;
       const chunkData = capture.samples.subarray(byteStart, byteEnd);
       // Store a copy — subarray is a view and may be invalidated
+      const encoded = rleEncode(new Uint8Array(chunkData), bps as 1 | 2);
       records.push({
         captureId,
         chunkIdx: i,
         startSample,
         endSample,
-        data: new Uint8Array(chunkData),
+        data: encoded.data,
+        format: encoded.format,
       });
     }
     await this.store.putChunks(records);
@@ -126,10 +129,29 @@ export class LaHistoryBuffer {
     const firstChunk = Math.floor(paddedStart / meta.chunkSize);
     const lastChunk = Math.floor((paddedEnd - 1) / meta.chunkSize);
 
+    // Bulk fetch any missing chunks in a single IDB transaction instead of one per chunk.
+    const missing: number[] = [];
+    for (let chunkIdx = firstChunk; chunkIdx <= lastChunk; chunkIdx++) {
+      const key = `${captureId}:${chunkIdx}`;
+      if (!this.cache.has(key)) missing.push(chunkIdx);
+    }
+    if (missing.length > 0) {
+      const tBulk = performance.now();
+      const records = await this.store.getChunkRecords(captureId, missing);
+      for (const record of records) {
+        const key = `${captureId}:${record.chunkIdx}`;
+        if (this.cache.has(key)) continue;
+        const byteLength = (record.endSample - record.startSample) * meta.bps;
+        const data = rleDecode(record.data, meta.bps as 1 | 2, (record.format ?? "raw") as RleFormat, byteLength);
+        this._putInCache(key, data);
+      }
+      console.log(`[${performance.now().toFixed(0)}ms] [idb] bulk fetch ${missing.length} chunks, ${(performance.now() - tBulk).toFixed(1)}ms`);
+    }
+
     for (let chunkIdx = firstChunk; chunkIdx <= lastChunk; chunkIdx++) {
       const chunkStartSample = chunkIdx * meta.chunkSize;
       const chunkEndSample = Math.min((chunkIdx + 1) * meta.chunkSize, totalSamples);
-      const chunk = await this._getChunk(captureId, chunkIdx);
+      const chunk = await this._getChunk(captureId, chunkIdx, meta);
       if (!chunk) continue;
 
       const overlapStart = Math.max(paddedStart, chunkStartSample);
@@ -172,11 +194,114 @@ export class LaHistoryBuffer {
     await this.store.init();
   }
 
+  /** Create an empty capture and return its id. */
+  async createCapture(
+    meta: Omit<LaCaptureMeta, "id" | "chunkCount" | "totalSamples">
+  ): Promise<string> {
+    return this.store.createCapture(meta);
+  }
+
+  /**
+   * Append raw sample bytes to an existing capture. Data is split into chunks and
+   * persisted incrementally so the capture becomes viewable before the full stream
+   * is complete. Last chunk is read, extended, and rewritten to keep chunk boundaries
+   * aligned with the configured chunkSize.
+   */
+  async appendChunk(captureId: string, data: Uint8Array): Promise<void> {
+    const meta = await this.store.getMeta(captureId);
+    if (!meta) throw new Error(`Capture ${captureId} not found`);
+
+    const bps = meta.bps;
+    const chunkSize = meta.chunkSize;
+    const totalSamples = meta.totalSamples;
+
+    if (data.length === 0) return;
+
+    let records: LaChunkRecord[] = [];
+    let nextSample = totalSamples;
+    let chunkIdx = meta.chunkCount;
+    let remaining = data;
+
+    // Extend the last existing chunk if it is partial
+    if (meta.chunkCount > 0) {
+      const lastChunkIdx = meta.chunkCount - 1;
+      const lastChunk = await this._getChunk(captureId, lastChunkIdx, meta);
+      if (lastChunk) {
+        const samplesInLast = Math.floor(lastChunk.length / bps);
+        const room = chunkSize - samplesInLast;
+        if (room > 0) {
+          const takeBytes = Math.min(remaining.length, room * bps);
+          const combined = new Uint8Array(lastChunk.length + takeBytes);
+          combined.set(lastChunk);
+          combined.set(remaining.subarray(0, takeBytes), lastChunk.length);
+          const encoded = rleEncode(combined, bps as 1 | 2);
+          records.push({
+            captureId,
+            chunkIdx: lastChunkIdx,
+            startSample: lastChunkIdx * chunkSize,
+            endSample: lastChunkIdx * chunkSize + Math.floor(combined.length / bps),
+            data: encoded.data,
+            format: encoded.format,
+          });
+          nextSample += Math.floor(takeBytes / bps);
+          chunkIdx = meta.chunkCount;
+          remaining = remaining.subarray(takeBytes);
+        }
+      }
+    }
+
+    // Add remaining data as full or partial new chunks
+    let offset = 0;
+    while (offset < remaining.length) {
+      const remainingBytes = remaining.length - offset;
+      const chunkBytes = Math.min(remainingBytes, chunkSize * bps);
+      const chunkData = remaining.subarray(offset, offset + chunkBytes);
+      const encoded = rleEncode(new Uint8Array(chunkData), bps as 1 | 2);
+      records.push({
+        captureId,
+        chunkIdx,
+        startSample: nextSample,
+        endSample: nextSample + Math.floor(chunkData.length / bps),
+        data: encoded.data,
+        format: encoded.format,
+      });
+      offset += chunkBytes;
+      nextSample += Math.floor(chunkBytes / bps);
+      chunkIdx++;
+    }
+
+    await this.store.putChunks(records);
+
+    const addedSamples = Math.floor(data.length / bps);
+    const newTotalSamples = totalSamples + addedSamples;
+    const newChunkCount = records.length > 0 ? records[records.length - 1].chunkIdx + 1 : meta.chunkCount;
+
+    await this.store.updateMeta({
+      ...meta,
+      totalSamples: newTotalSamples,
+      chunkCount: newChunkCount,
+    });
+
+    // Update hot cache
+    for (const r of records) {
+      const key = `${captureId}:${r.chunkIdx}`;
+      this._putInCache(key, r.data);
+    }
+  }
+
+  /** Finalize a streaming capture and return the updated metadata. */
+  async finalizeCapture(captureId: string): Promise<LaCaptureMeta> {
+    const meta = await this.store.getMeta(captureId);
+    if (!meta) throw new Error(`Capture ${captureId} not found`);
+    return meta;
+  }
+
   // ── internal ──
 
   private async _getChunk(
     captureId: string,
-    chunkIdx: number
+    chunkIdx: number,
+    meta?: LaCaptureMeta
   ): Promise<Uint8Array | null> {
     const key = `${captureId}:${chunkIdx}`;
     const cached = this.cache.get(key);
@@ -186,9 +311,14 @@ export class LaHistoryBuffer {
       return cached.data;
     }
 
-    const data = await this.store.getChunk(captureId, chunkIdx);
-    if (!data) return null;
+    const record = await this.store.getChunkRecord(captureId, chunkIdx);
+    if (!record) return null;
 
+    const m = meta ?? await this.store.getMeta(captureId);
+    if (!m) return null;
+
+    const byteLength = (record.endSample - record.startSample) * m.bps;
+    const data = rleDecode(record.data, m.bps as 1 | 2, (record.format ?? "raw") as RleFormat, byteLength);
     this._putInCache(key, data);
     return data;
   }

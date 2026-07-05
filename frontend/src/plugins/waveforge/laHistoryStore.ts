@@ -10,10 +10,21 @@
  * Invariants: local-first, zero-telemetry, no third-party deps.
  */
 
+import { rleDecode, type RleFormat } from "./laRle";
+
 const DB_NAME = "forge-la-history";
 const DB_VERSION = 1;
 const META_STORE = "captures";
 const CHUNK_STORE = "chunks";
+
+export interface LaChunkRecord {
+  captureId: string;
+  chunkIdx: number;
+  startSample: number;
+  endSample: number;
+  data: Uint8Array;
+  format?: "rle" | "raw";
+}
 
 export interface LaCaptureMeta {
   id: string;
@@ -26,14 +37,6 @@ export interface LaCaptureMeta {
   chunkSize: number;
   chunkCount: number;
   bps: number; // bytes per sample
-}
-
-export interface LaChunkRecord {
-  captureId: string;
-  chunkIdx: number;
-  startSample: number;
-  endSample: number;
-  data: Uint8Array;
 }
 
 function promisify<T>(req: IDBRequest<T>): Promise<T> {
@@ -124,15 +127,40 @@ export class LaHistoryStore {
     });
   }
 
-  /** Retrieve a single chunk by composite key. */
-  async getChunk(captureId: string, chunkIdx: number): Promise<Uint8Array | null> {
+  /** Retrieve a single chunk record by composite key (caller must decompress). */
+  async getChunkRecord(captureId: string, chunkIdx: number): Promise<LaChunkRecord | null> {
     const db = this._db();
     const tx = db.transaction([CHUNK_STORE], "readonly");
     const store = tx.objectStore(CHUNK_STORE);
-    const result = await promisify<LaChunkRecord | undefined>(
-      store.get([captureId, chunkIdx])
+    const result = await promisify<LaChunkRecord | undefined>(store.get([captureId, chunkIdx]));
+    return result ?? null;
+  }
+
+  /** Retrieve multiple chunk records in a single transaction (caller must decompress). */
+  async getChunkRecords(captureId: string, chunkIdxs: number[]): Promise<LaChunkRecord[]> {
+    if (chunkIdxs.length === 0) return [];
+    const db = this._db();
+    const tx = db.transaction([CHUNK_STORE], "readonly");
+    const store = tx.objectStore(CHUNK_STORE);
+    const results = await Promise.all(
+      chunkIdxs.map(idx => promisify<LaChunkRecord | undefined>(store.get([captureId, idx])))
     );
-    return result?.data ?? null;
+    return results.filter((r): r is LaChunkRecord => r !== undefined);
+  }
+
+  /** Retrieve a single chunk by composite key (returns decompressed bytes). */
+  async getChunk(captureId: string, chunkIdx: number): Promise<Uint8Array | null> {
+    const db = this._db();
+    const tx = db.transaction([META_STORE, CHUNK_STORE], "readonly");
+    const metaStore = tx.objectStore(META_STORE);
+    const chunkStore = tx.objectStore(CHUNK_STORE);
+    const [record, meta] = await Promise.all([
+      promisify<LaChunkRecord | undefined>(chunkStore.get([captureId, chunkIdx])),
+      promisify<LaCaptureMeta | undefined>(metaStore.get(captureId)),
+    ]);
+    if (!record || !meta) return null;
+    const byteLength = (record.endSample - record.startSample) * meta.bps;
+    return rleDecode(record.data, meta.bps as 1 | 2, (record.format ?? "raw") as RleFormat, byteLength);
   }
 
   /** Update capture metadata (e.g., after chunking is complete). */

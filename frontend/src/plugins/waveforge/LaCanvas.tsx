@@ -79,6 +79,8 @@ export function LaCanvas(props: Props) {
   const mouseSampleRef = useRef(0);
   const overlayRectsRef = useRef<Array<{ x: number; y: number; w: number; h: number; sample: number; text: string }>>([]);
   const [tooltip, setTooltip] = useState<{ x: number; y: number; text: string } | null>(null);
+  const shiftRef = useRef(false);
+  const selectionRef = useRef<{ startX: number; currentX: number } | null>(null);
 
   useEffect(() => {
     zoomRef.current = props.zoomSamples ?? null;
@@ -98,6 +100,16 @@ export function LaCanvas(props: Props) {
   useEffect(() => { onCursorBRef.current = props.onCursorBChange; }, [props.onCursorBChange]);
   useEffect(() => { onMouseSampleRef.current = props.onMouseSampleChange; }, [props.onMouseSampleChange]);
   useEffect(() => { onPacketClickRef.current = props.onPacketClick; }, [props.onPacketClick]);
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => { if (e.key === "Shift") shiftRef.current = true; };
+    const up = (e: KeyboardEvent) => { if (e.key === "Shift") shiftRef.current = false; };
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+    };
+  }, []);
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; sample: number } | null>(null);
 
@@ -173,6 +185,18 @@ export function LaCanvas(props: Props) {
     ctx.lineTo(LABEL_WIDTH, H);
     ctx.stroke();
 
+    // Shift-drag selection rectangle
+    const selection = selectionRef.current;
+    if (selection) {
+      const left = Math.min(selection.startX, selection.currentX);
+      const right = Math.max(selection.startX, selection.currentX);
+      ctx.fillStyle = "rgba(59, 130, 246, 0.15)";
+      ctx.strokeStyle = "#3b82f6";
+      ctx.lineWidth = 1;
+      ctx.fillRect(left, RULER_H, right - left, H - RULER_H);
+      ctx.strokeRect(left + 0.5, RULER_H + 0.5, right - left - 1, H - RULER_H - 1);
+    }
+
     // Faint vertical gridlines
     ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--fob-border").trim() || "#2a2d3e";
     ctx.lineWidth = 1;
@@ -202,29 +226,68 @@ export function LaCanvas(props: Props) {
       ctx.globalAlpha = ch.enabled ? 1 : 0.4;
       ctx.beginPath();
 
+      const yHigh = y - rowH * 0.35;
+      const yLow = y + rowH * 0.35;
+      const chMask = 1 << ch.id;
+      const sampleCount = props.samples.length / bps;
+      const samples = props.samples;
+      const panLocal = pan;
+      const bpsLocal = bps;
+
       let lastBit = -1;
       for (let px = 0; px < plotW; px++) {
-        const sampleInCapture = Math.floor(pan + px * sPerPx);
-        if (sampleInCapture >= totalSamples) break;
-        const s = sampleInCapture - pan; // index within the windowed buffer
-        const off = s * bps;
-        const lo = props.samples[off] ?? 0;
-        const hi = bps === 2 ? (props.samples[off + 1] ?? 0) : 0;
-        const v = (hi << 8) | lo;
-        const bit = (v >> ch.id) & 1;
-        const yHigh = y - rowH * 0.35;
-        const yLow = y + rowH * 0.35;
-        const py = bit ? yHigh : yLow;
+        const sStart = Math.floor(panLocal + px * sPerPx);
+        const sEnd = Math.min(Math.floor(panLocal + (px + 1) * sPerPx), totalSamples);
+        if (sStart >= totalSamples) break;
+        if (sEnd <= sStart) continue;
+
+        const firstOff = (sStart - panLocal) * bpsLocal;
+        const firstLo = samples[firstOff] ?? 0;
+        const firstHi = bpsLocal === 2 ? (samples[firstOff + 1] ?? 0) : 0;
+        const firstBit = ((firstHi << 8) | firstLo) & chMask ? 1 : 0;
+
+        const lastOff = (sEnd - 1 - panLocal) * bpsLocal;
+        const lastLo = samples[lastOff] ?? 0;
+        const lastHi = bpsLocal === 2 ? (samples[lastOff + 1] ?? 0) : 0;
+        const lastBitPx = ((lastHi << 8) | lastLo) & chMask ? 1 : 0;
+
+        let hasHigh = firstBit === 1 || lastBitPx === 1;
+        let hasLow = firstBit === 0 || lastBitPx === 0;
+
+        // When a pixel spans many samples, scan a few interior points so narrow pulses are not lost.
+        if (!hasHigh || !hasLow) {
+          const count = sEnd - sStart;
+          const step = Math.max(1, Math.floor(count / 16));
+          for (let s = sStart + step; s < sEnd - 1 && s < panLocal + sampleCount; s += step) {
+            const off = (s - panLocal) * bpsLocal;
+            const lo = samples[off] ?? 0;
+            const hi = bpsLocal === 2 ? (samples[off + 1] ?? 0) : 0;
+            const bit = ((hi << 8) | lo) & chMask ? 1 : 0;
+            if (bit) hasHigh = true;
+            else hasLow = true;
+            if (hasHigh && hasLow) break;
+          }
+        }
+
         const x = LABEL_WIDTH + px;
         if (lastBit === -1) {
-          ctx.moveTo(x, py);
-        } else if (bit !== lastBit) {
+          ctx.moveTo(x, firstBit ? yHigh : yLow);
+        } else if (firstBit !== lastBit) {
           ctx.lineTo(x, lastBit ? yHigh : yLow);
-          ctx.lineTo(x, py);
+          ctx.lineTo(x, firstBit ? yHigh : yLow);
         } else {
-          ctx.lineTo(x, py);
+          ctx.lineTo(x, firstBit ? yHigh : yLow);
         }
-        lastBit = bit;
+
+        if (hasHigh && hasLow) {
+          // Activity is compressed inside this pixel column; draw a vertical band.
+          ctx.lineTo(x, yHigh);
+          ctx.lineTo(x, yLow);
+          ctx.lineTo(x, lastBitPx ? yHigh : yLow);
+          lastBit = lastBitPx;
+        } else {
+          lastBit = firstBit;
+        }
       }
       ctx.stroke();
       ctx.globalAlpha = 1;
@@ -507,6 +570,10 @@ export function LaCanvas(props: Props) {
   const handleMouseDown = (e: React.MouseEvent) => {
     const x = e.nativeEvent.offsetX;
     const y = e.nativeEvent.offsetY;
+    if (shiftRef.current) {
+      selectionRef.current = { startX: x, currentX: x };
+      return;
+    }
     const near = cursorNearX(x);
     if (near) {
       cursorDragRef.current = near;
@@ -533,7 +600,13 @@ export function LaCanvas(props: Props) {
 
     const canvas = canvasRef.current;
     if (canvas) {
-      canvas.style.cursor = cursorNearX(x) ? "ew-resize" : hit ? "pointer" : "crosshair";
+      canvas.style.cursor = shiftRef.current ? "cell" : cursorNearX(x) ? "ew-resize" : hit ? "pointer" : "crosshair";
+    }
+
+    if (selectionRef.current) {
+      selectionRef.current.currentX = x;
+      scheduleDraw();
+      return;
     }
 
     if (cursorDragRef.current) {
@@ -557,6 +630,20 @@ export function LaCanvas(props: Props) {
     }
   };
   const handleMouseUp = () => {
+    if (selectionRef.current) {
+      const left = Math.min(selectionRef.current.startX, selectionRef.current.currentX);
+      const right = Math.max(selectionRef.current.startX, selectionRef.current.currentX);
+      selectionRef.current = null;
+      if (right - left > 4) {
+        const startSample = sampleFromX(left);
+        const endSample = sampleFromX(right);
+        const newZoom = Math.max(10, endSample - startSample);
+        const newPan = Math.max(0, Math.min(startSample, totalSamples - newZoom));
+        onZoomRef.current?.(newZoom === totalSamples ? null : newZoom);
+        onPanRef.current?.(newPan);
+      }
+      return;
+    }
     cursorDragRef.current = null;
     isPanningRef.current = false;
     panStartRef.current = null;

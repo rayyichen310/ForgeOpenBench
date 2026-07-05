@@ -338,4 +338,44 @@ describe("LaHistoryBuffer", () => {
     expect(window.length).toBe(4);
     expect(Array.from(window)).toEqual([3, 4, 5, 6]);
   });
+
+  it("createCapture + appendChunk + finalizeCapture streams a capture", async () => {
+    const id = await buf.createCapture({
+      sampleRate: 1_000_000,
+      width: 8,
+      source: "stream-test",
+      importedAt: new Date().toISOString(),
+      channelLabels: ["D0"],
+      chunkSize: 10,
+      bps: 1,
+    });
+    await buf.appendChunk(id, new Uint8Array([0, 1, 2, 3, 4]));
+    await buf.appendChunk(id, new Uint8Array([5, 6, 7, 8, 9]));
+    await buf.appendChunk(id, new Uint8Array([10, 11, 12]));
+    const meta = await buf.finalizeCapture(id);
+    expect(meta.totalSamples).toBe(13);
+    expect(meta.chunkCount).toBe(2);
+
+    const window = await buf.getWindow(id, 0, 13);
+    expect(Array.from(window)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+  });
+
+  it("appendChunk extends the last partial chunk", async () => {
+    const id = await buf.createCapture({
+      sampleRate: 1_000_000,
+      width: 8,
+      source: "stream-test",
+      importedAt: new Date().toISOString(),
+      chunkSize: 10,
+      bps: 1,
+    });
+    await buf.appendChunk(id, new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7]));
+    await buf.appendChunk(id, new Uint8Array([8, 9, 10, 11]));
+    const meta = await buf.finalizeCapture(id);
+    expect(meta.totalSamples).toBe(12);
+    expect(meta.chunkCount).toBe(2);
+
+    const window = await buf.getWindow(id, 0, 12);
+    expect(Array.from(window)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+  });
 });

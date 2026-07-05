@@ -90,7 +90,9 @@ async function inflate(data: Uint8Array): Promise<Uint8Array> {
   return out;
 }
 
-export async function parseSigrokSr(buffer: ArrayBuffer): Promise<LaCapture> {
+export async function streamSigrokSr(
+  buffer: ArrayBuffer
+): Promise<{ meta: Omit<LaCapture, "samples">; chunks: AsyncGenerator<Uint8Array> }> {
   const entries = await unzipAll(buffer);
   const metaEntry = entries.find(e => e.name === "metadata");
   if (!metaEntry) throw new Error(".sr file missing metadata");
@@ -109,15 +111,6 @@ export async function parseSigrokSr(buffer: ArrayBuffer): Promise<LaCapture> {
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
   if (logicEntries.length === 0) throw new Error(".sr file missing logic data");
 
-  const totalData = logicEntries.reduce((sum, e) => sum + e.data.length, 0);
-  const totalSamples = Number(params["total samples"] ?? 0) || Math.floor(totalData / unitsize);
-  const samples = new Uint8Array(totalSamples * unitsize);
-  let off = 0;
-  for (const e of logicEntries) {
-    const take = Math.min(e.data.length, samples.length - off);
-    samples.set(e.data.slice(0, take), off);
-    off += take;
-  }
   const width = unitsize === 2 ? 16 : 8;
 
   // Extract optional probe labels from metadata (probe1 -> channel 0, etc.).
@@ -129,14 +122,35 @@ export async function parseSigrokSr(buffer: ArrayBuffer): Promise<LaCapture> {
     if (label !== undefined) channelLabels[i - 1] = label;
   }
 
-  return {
+  const meta: Omit<LaCapture, "samples"> = {
     sampleRate,
     width,
-    samples,
     source: "sigrok-sr",
     importedAt: new Date().toISOString(),
     channelLabels: channelLabels.length > 0 ? channelLabels : undefined,
   };
+
+  async function* chunks() {
+    for (const e of logicEntries) {
+      yield e.data;
+    }
+  }
+
+  return { meta, chunks: chunks() };
+}
+
+export async function parseSigrokSr(buffer: ArrayBuffer): Promise<LaCapture> {
+  const { meta, chunks } = await streamSigrokSr(buffer);
+  const parts: Uint8Array[] = [];
+  for await (const c of chunks) parts.push(c);
+  const totalData = parts.reduce((sum, e) => sum + e.length, 0);
+  const samples = new Uint8Array(totalData);
+  let off = 0;
+  for (const c of parts) {
+    samples.set(c, off);
+    off += c.length;
+  }
+  return { ...meta, samples };
 }
 
 function parseSigrokMetadata(text: string): Record<string, string> {

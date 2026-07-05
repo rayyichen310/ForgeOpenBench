@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { unzipAll, parseSigrokSr } from "./sigrokSrParser";
+import { unzipAll, parseSigrokSr, streamSigrokSr } from "./sigrokSrParser";
 
 function buildZip(entries: { name: string; data: Uint8Array }[]): ArrayBuffer {
   const parts: Uint8Array[] = [];
@@ -157,5 +157,29 @@ capturefile=logic-1
     ]);
     const cap = await parseSigrokSr(zip);
     expect(cap.samples).toEqual(new Uint8Array([0x01, 0x02, 0x03, 0x04, 0x05]));
+  });
+
+  it("streamSigrokSr yields each logic chunk separately", async () => {
+    const metadata = `[sigrok]
+samplerate=1000000
+unitsize=1
+capturefile=logic-1
+`;
+    const zip = buildZip([
+      { name: "metadata", data: new TextEncoder().encode(metadata) },
+      { name: "logic-1", data: new Uint8Array([0x01, 0x02]) },
+      { name: "logic-1-1", data: new Uint8Array([0x03, 0x04]) },
+      { name: "logic-1-2", data: new Uint8Array([0x05]) },
+    ]);
+    const { meta, chunks } = await streamSigrokSr(zip);
+    expect(meta.sampleRate).toBe(1_000_000);
+    expect(meta.width).toBe(8);
+    const parts: Uint8Array[] = [];
+    for await (const c of chunks) parts.push(c);
+    expect(parts.length).toBe(3);
+    const all = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+    let off = 0;
+    for (const p of parts) { all.set(p, off); off += p.length; }
+    expect(all).toEqual(new Uint8Array([0x01, 0x02, 0x03, 0x04, 0x05]));
   });
 });
