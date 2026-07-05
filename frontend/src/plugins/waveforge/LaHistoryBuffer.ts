@@ -136,7 +136,6 @@ export class LaHistoryBuffer {
       if (!this.cache.has(key)) missing.push(chunkIdx);
     }
     if (missing.length > 0) {
-      const tBulk = performance.now();
       const records = await this.store.getChunkRecords(captureId, missing);
       for (const record of records) {
         const key = `${captureId}:${record.chunkIdx}`;
@@ -145,7 +144,6 @@ export class LaHistoryBuffer {
         const data = rleDecode(record.data, meta.bps as 1 | 2, (record.format ?? "raw") as RleFormat, byteLength);
         this._putInCache(key, data);
       }
-      console.log(`[${performance.now().toFixed(0)}ms] [idb] bulk fetch ${missing.length} chunks, ${(performance.now() - tBulk).toFixed(1)}ms`);
     }
 
     for (let chunkIdx = firstChunk; chunkIdx <= lastChunk; chunkIdx++) {
