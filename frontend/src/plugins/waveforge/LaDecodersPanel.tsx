@@ -212,8 +212,6 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, panSample, zoo
               <option value={7}>7-bit</option>
               <option value={8}>8-bit</option>
             </select>
-            <button className="px-2 py-0.5 rounded border border-fob-border bg-fob-surface hover:bg-fob-border disabled:opacity-40" onClick={() => onFrameNavigate?.("previous")} disabled={!onFrameNavigate}>← Prev</button>
-            <button className="px-2 py-0.5 rounded border border-fob-border bg-fob-surface hover:bg-fob-border disabled:opacity-40" onClick={() => onFrameNavigate?.("next")} disabled={!onFrameNavigate}>Next →</button>
           </>
         )}
         {tab === "spi" && (
@@ -320,6 +318,8 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, panSample, zoo
             </select>
           </>
         )}
+        <button className="px-2 py-0.5 rounded border border-fob-border bg-fob-surface hover:bg-fob-border disabled:opacity-40" onClick={() => onFrameNavigate?.("previous")} disabled={!onFrameNavigate}>← Prev</button>
+        <button className="px-2 py-0.5 rounded border border-fob-border bg-fob-surface hover:bg-fob-border disabled:opacity-40" onClick={() => onFrameNavigate?.("next")} disabled={!onFrameNavigate}>Next →</button>
       </div>
 
       {/* Ticket strip */}

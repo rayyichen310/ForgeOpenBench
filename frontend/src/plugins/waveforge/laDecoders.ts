@@ -597,16 +597,16 @@ export interface FrameSearchResult {
   endSample: number;
   ts: number;
   type?: string;
+  error?: boolean;
 }
 
-export async function findNearestI2CFrame(
+export async function searchFrames<T extends FrameSearchResult>(
   getWindow: (startSample: number, sampleCount: number) => Promise<Uint8Array>,
-  sampleRate: number,
-  config: { scl: number; sda: number },
+  decodeWindow: (window: Uint8Array) => T[],
   centerSample: number,
   direction: "next" | "previous",
   options?: { windowSize?: number; maxWindows?: number }
-): Promise<FrameSearchResult | null> {
+): Promise<T | null> {
   const windowSize = options?.windowSize ?? 100_000;
   const maxWindows = options?.maxWindows ?? 20;
 
@@ -618,21 +618,21 @@ export async function findNearestI2CFrame(
     const window = await getWindow(startSample, count);
     if (window.length === 0) break;
 
-    const frames = decodeI2C(window, sampleRate, config.scl, config.sda);
+    const frames = decodeWindow(window);
     if (direction === "next") {
       for (const f of frames) {
         const absStart = startSample + f.startSample;
         if (absStart > centerSample) {
-          return { startSample: absStart, endSample: startSample + f.endSample, ts: f.ts, type: f.type };
+          return { ...f, startSample: absStart, endSample: startSample + f.endSample };
         }
       }
       startSample += windowSize;
     } else {
-      let candidate: FrameSearchResult | null = null;
+      let candidate: T | null = null;
       for (const f of frames) {
         const absEnd = startSample + f.endSample;
         if (absEnd < centerSample) {
-          candidate = { startSample: startSample + f.startSample, endSample: absEnd, ts: f.ts, type: f.type };
+          candidate = { ...f, startSample: startSample + f.startSample, endSample: absEnd };
         }
       }
       if (candidate) return candidate;
@@ -642,6 +642,181 @@ export async function findNearestI2CFrame(
     windowsChecked++;
   }
   return null;
+}
+
+export function findNearestI2CFrame(
+  getWindow: (startSample: number, sampleCount: number) => Promise<Uint8Array>,
+  sampleRate: number,
+  config: { scl: number; sda: number },
+  centerSample: number,
+  direction: "next" | "previous",
+  options?: { windowSize?: number; maxWindows?: number }
+): Promise<FrameSearchResult | null> {
+  return searchFrames(
+    getWindow,
+    (window) => decodeI2C(window, sampleRate, config.scl, config.sda),
+    centerSample,
+    direction,
+    options
+  );
+}
+
+export function findNearestUartFrame(
+  getWindow: (startSample: number, sampleCount: number) => Promise<Uint8Array>,
+  sampleRate: number,
+  config: { baud: number; ch: number },
+  centerSample: number,
+  direction: "next" | "previous",
+  options?: { windowSize?: number; maxWindows?: number }
+): Promise<FrameSearchResult | null> {
+  return searchFrames(
+    getWindow,
+    (window) => decodeUartChunk(window, sampleRate, config.baud, config.ch).map(r => ({
+      startSample: r.sample,
+      endSample: r.endSample,
+      ts: r.ts,
+      type: r.error ? "error" : "byte",
+      error: r.error,
+    })),
+    centerSample,
+    direction,
+    options
+  );
+}
+
+export function findNearestSpiFrame(
+  getWindow: (startSample: number, sampleCount: number) => Promise<Uint8Array>,
+  sampleRate: number,
+  config: { mosi: number; miso: number; sck: number; cs: number; mode: 0 | 1 | 2 | 3; bits: 8 | 16; csActiveLow: boolean },
+  centerSample: number,
+  direction: "next" | "previous",
+  options?: { windowSize?: number; maxWindows?: number }
+): Promise<FrameSearchResult | null> {
+  return searchFrames(
+    getWindow,
+    (window) => decodeSPI(window, sampleRate, config.mosi, config.miso, config.sck, config.cs, config.mode, config.bits, config.csActiveLow).map(r => ({
+      startSample: r.startSample,
+      endSample: r.endSample,
+      ts: r.ts,
+      type: "word",
+    })),
+    centerSample,
+    direction,
+    options
+  );
+}
+
+export function findNearestCanFrame(
+  getWindow: (startSample: number, sampleCount: number) => Promise<Uint8Array>,
+  sampleRate: number,
+  config: { ch: number; baud: number },
+  centerSample: number,
+  direction: "next" | "previous",
+  options?: { windowSize?: number; maxWindows?: number }
+): Promise<FrameSearchResult | null> {
+  return searchFrames(
+    getWindow,
+    (window) => decodeCAN(window, sampleRate, config.ch, config.baud).map(r => ({
+      startSample: r.startSample,
+      endSample: r.endSample,
+      ts: r.ts,
+      type: "frame",
+      error: r.error,
+    })),
+    centerSample,
+    direction,
+    options
+  );
+}
+
+export function findNearestOneWireFrame(
+  getWindow: (startSample: number, sampleCount: number) => Promise<Uint8Array>,
+  sampleRate: number,
+  config: { ch: number },
+  centerSample: number,
+  direction: "next" | "previous",
+  options?: { windowSize?: number; maxWindows?: number }
+): Promise<FrameSearchResult | null> {
+  return searchFrames(
+    getWindow,
+    (window) => decodeOneWire(window, sampleRate, config.ch).map(r => ({
+      startSample: r.startSample,
+      endSample: r.endSample,
+      ts: r.ts,
+      type: r.type,
+    })),
+    centerSample,
+    direction,
+    options
+  );
+}
+
+export function findNearestSwdFrame(
+  getWindow: (startSample: number, sampleCount: number) => Promise<Uint8Array>,
+  sampleRate: number,
+  config: { swdio: number; swclk: number },
+  centerSample: number,
+  direction: "next" | "previous",
+  options?: { windowSize?: number; maxWindows?: number }
+): Promise<FrameSearchResult | null> {
+  return searchFrames(
+    getWindow,
+    (window) => decodeSWD(window, sampleRate, config.swdio, config.swclk).map(r => ({
+      startSample: r.startSample,
+      endSample: r.endSample,
+      ts: r.ts,
+      type: r.type,
+      error: !r.ok,
+    })),
+    centerSample,
+    direction,
+    options
+  );
+}
+
+export function findNearestJtagFrame(
+  getWindow: (startSample: number, sampleCount: number) => Promise<Uint8Array>,
+  sampleRate: number,
+  config: { tck: number; tms: number; tdi: number; tdo: number },
+  centerSample: number,
+  direction: "next" | "previous",
+  options?: { windowSize?: number; maxWindows?: number }
+): Promise<FrameSearchResult | null> {
+  return searchFrames(
+    getWindow,
+    (window) => decodeJTAG(window, sampleRate, config.tck, config.tms, config.tdi, config.tdo).map(r => ({
+      startSample: r.startSample,
+      endSample: r.endSample,
+      ts: r.ts,
+      type: r.type,
+    })),
+    centerSample,
+    direction,
+    options
+  );
+}
+
+export function findNearestModbusFrame(
+  getWindow: (startSample: number, sampleCount: number) => Promise<Uint8Array>,
+  sampleRate: number,
+  config: { ch: number; baud: number; parity: "none" | "even" | "odd" },
+  centerSample: number,
+  direction: "next" | "previous",
+  options?: { windowSize?: number; maxWindows?: number }
+): Promise<FrameSearchResult | null> {
+  return searchFrames(
+    getWindow,
+    (window) => decodeModbus(window, sampleRate, config.ch, config.baud, config.parity).map(r => ({
+      startSample: r.startSample,
+      endSample: r.endSample,
+      ts: r.ts,
+      type: r.type,
+      error: !r.crcOk,
+    })),
+    centerSample,
+    direction,
+    options
+  );
 }
 
 export function decodeSPI(

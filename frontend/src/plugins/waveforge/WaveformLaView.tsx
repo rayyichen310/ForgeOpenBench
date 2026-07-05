@@ -11,7 +11,7 @@ import type { LaChannel } from "./laChannelConfig";
 import type { LaAcquireMode } from "./laAcquireModes";
 import type { LaTriggerConfig } from "./laAcquireModes";
 import type { LaCapture, DecoderDefaults } from "./laDecoders";
-import { inferDecoderDefaults, generateLaTestPattern, decodeUartChunk, decodeI2C, decodeSPI, decodeCAN, decodeOneWire, decodeSWD, decodeJTAG, decodeModbus, findNearestI2CFrame } from "./laDecoders";
+import { inferDecoderDefaults, generateLaTestPattern, decodeUartChunk, decodeI2C, decodeSPI, decodeCAN, decodeOneWire, decodeSWD, decodeJTAG, decodeModbus, findNearestUartFrame, findNearestI2CFrame, findNearestSpiFrame, findNearestCanFrame, findNearestOneWireFrame, findNearestSwdFrame, findNearestJtagFrame, findNearestModbusFrame } from "./laDecoders";
 import { parseLaCsv, parseLaJson, detectLaFormat, streamSigrokSr } from "./laImport";
 import { downloadLaCapture } from "./laExport";
 import { LaHistoryBuffer, type LaCaptureMeta } from "./LaHistoryBuffer";
@@ -229,17 +229,30 @@ export function WaveformLaView(props: Props) {
   }, [decoderDefaults]);
 
   const handleFrameNavigate = useCallback(async (direction: "next" | "previous") => {
-    if (!activeCaptureId || !captureMeta || decoderState.tab !== "i2c" || !decoderState.i2c) return;
+    if (!activeCaptureId || !captureMeta) return;
     const total = captureMeta.totalSamples;
     const centerSample = panSample + (zoomSamples ?? total) / 2;
-    const result = await findNearestI2CFrame(
-      (start, count) => historyRef.current.getWindow(activeCaptureId, start, count, 0),
-      captureMeta.sampleRate,
-      { scl: decoderState.i2c.scl, sda: decoderState.i2c.sda },
-      centerSample,
-      direction,
-      { windowSize: 100_000, maxWindows: 20 }
-    );
+    const getWindow = (start: number, count: number) => historyRef.current.getWindow(activeCaptureId, start, count, 0);
+    const { sampleRate } = captureMeta;
+    let result: Awaited<ReturnType<typeof findNearestI2CFrame>> = null;
+    const { tab } = decoderState;
+    if (tab === "uart" && decoderState.uart) {
+      result = await findNearestUartFrame(getWindow, sampleRate, decoderState.uart, centerSample, direction, { windowSize: 100_000, maxWindows: 20 });
+    } else if (tab === "i2c" && decoderState.i2c) {
+      result = await findNearestI2CFrame(getWindow, sampleRate, decoderState.i2c, centerSample, direction, { windowSize: 100_000, maxWindows: 20 });
+    } else if (tab === "spi" && decoderState.spi) {
+      result = await findNearestSpiFrame(getWindow, sampleRate, decoderState.spi, centerSample, direction, { windowSize: 100_000, maxWindows: 20 });
+    } else if (tab === "can" && decoderState.can) {
+      result = await findNearestCanFrame(getWindow, sampleRate, decoderState.can, centerSample, direction, { windowSize: 100_000, maxWindows: 20 });
+    } else if (tab === "onewire" && decoderState.onewire) {
+      result = await findNearestOneWireFrame(getWindow, sampleRate, decoderState.onewire, centerSample, direction, { windowSize: 100_000, maxWindows: 20 });
+    } else if (tab === "swd" && decoderState.swd) {
+      result = await findNearestSwdFrame(getWindow, sampleRate, decoderState.swd, centerSample, direction, { windowSize: 100_000, maxWindows: 20 });
+    } else if (tab === "jtag" && decoderState.jtag) {
+      result = await findNearestJtagFrame(getWindow, sampleRate, decoderState.jtag, centerSample, direction, { windowSize: 100_000, maxWindows: 20 });
+    } else if (tab === "modbus" && decoderState.modbus) {
+      result = await findNearestModbusFrame(getWindow, sampleRate, decoderState.modbus, centerSample, direction, { windowSize: 100_000, maxWindows: 20 });
+    }
     if (result) handlePacketClick(result.startSample);
   }, [activeCaptureId, captureMeta, decoderState, panSample, zoomSamples]);
 
