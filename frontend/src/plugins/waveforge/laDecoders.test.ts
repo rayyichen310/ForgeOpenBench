@@ -19,6 +19,7 @@ import {
   MAX_TICKER,
   inferDecoderDefaults,
   autoDetectLaProtocol,
+  findNearestI2CFrame,
 } from "./laDecoders";
 
 // ---------------------------------------------------------------------------
@@ -660,5 +661,73 @@ describe("decodeModbus", () => {
     expect(frames[0].func).toBe(0x03);
     expect(frames[0].data).toEqual([0x02]);
     expect(frames[0].crcOk).toBe(true);
+  });
+});
+
+describe("findNearestI2CFrame", () => {
+  const RATE = 1_000_000;
+  const SCL = 0;
+  const SDA = 1;
+  const PHASES = 10; // samples per I2C phase
+
+  function buildTransaction(addr7: number, data: Array<{ byte: number; ack: boolean }>) {
+    return buildI2cSignal(addr7, true, data, PHASES, SCL, SDA);
+  }
+
+  function concatWithGap(chunks: Uint8Array[], gapSamples: number) {
+    const total = chunks.reduce((sum, c) => sum + c.length, 0) + gapSamples * (chunks.length - 1);
+    const out = new Uint8Array(total);
+    let offset = 0;
+    for (let i = 0; i < chunks.length; i++) {
+      out.set(chunks[i], offset);
+      offset += chunks[i].length;
+      if (i < chunks.length - 1) {
+        // idle gap: both SCL and SDA high
+        for (let j = 0; j < gapSamples; j++) out[offset + j] = (1 << SCL) | (1 << SDA);
+        offset += gapSamples;
+      }
+    }
+    return out;
+  }
+
+  it("finds the next I2C frame lazily across windows", async () => {
+    const t1 = buildTransaction(0x50, [{ byte: 0x01, ack: true }]);
+    const t2 = buildTransaction(0x51, [{ byte: 0x02, ack: true }]);
+    const t3 = buildTransaction(0x52, [{ byte: 0x03, ack: true }]);
+    const samples = concatWithGap([t1, t2, t3], 500);
+
+    // Fake windowed getter that slices the global buffer in small windows.
+    const getWindow = async (start: number, count: number) => {
+      const end = Math.min(start + count, samples.length);
+      return samples.slice(start, end);
+    };
+
+    const firstFrameStart = (await findNearestI2CFrame(getWindow, RATE, { scl: SCL, sda: SDA }, 0, "next", { windowSize: 200, maxWindows: 10 }))?.startSample ?? -1;
+    expect(firstFrameStart).toBeGreaterThanOrEqual(0);
+
+    const secondFrameStart = (await findNearestI2CFrame(getWindow, RATE, { scl: SCL, sda: SDA }, firstFrameStart + 1, "next", { windowSize: 200, maxWindows: 10 }))?.startSample ?? -1;
+    expect(secondFrameStart).toBeGreaterThan(firstFrameStart);
+
+    const thirdFrameStart = (await findNearestI2CFrame(getWindow, RATE, { scl: SCL, sda: SDA }, secondFrameStart + 1, "next", { windowSize: 200, maxWindows: 10 }))?.startSample ?? -1;
+    expect(thirdFrameStart).toBeGreaterThan(secondFrameStart);
+  });
+
+  it("finds the previous I2C frame lazily across windows", async () => {
+    const t1 = buildTransaction(0x50, [{ byte: 0x01, ack: true }]);
+    const t2 = buildTransaction(0x51, [{ byte: 0x02, ack: true }]);
+    const t3 = buildTransaction(0x52, [{ byte: 0x03, ack: true }]);
+    const samples = concatWithGap([t1, t2, t3], 500);
+
+    const getWindow = async (start: number, count: number) => {
+      const end = Math.min(start + count, samples.length);
+      return samples.slice(start, end);
+    };
+
+    const lastFrameStart = (await findNearestI2CFrame(getWindow, RATE, { scl: SCL, sda: SDA }, samples.length - 1, "previous", { windowSize: 200, maxWindows: 10 }))?.startSample ?? -1;
+    expect(lastFrameStart).toBeGreaterThan(0);
+
+    const middleFrameStart = (await findNearestI2CFrame(getWindow, RATE, { scl: SCL, sda: SDA }, lastFrameStart, "previous", { windowSize: 200, maxWindows: 10 }))?.startSample ?? -1;
+    expect(middleFrameStart).toBeLessThan(lastFrameStart);
+    expect(middleFrameStart).toBeGreaterThan(0);
   });
 });
