@@ -42,6 +42,12 @@ FOB is the *"now what."*
 
 ![WaveForge DSO — rising exponential on CH1 with measurements](docs/images/FOB-Wave-Scope-rev2b.png)
 
+### WaveForge LA
+
+![WaveForge LA — 16-channel capture with packet overlays and decoder ticket strip](docs/images/FOB-Wave-Logic-a.png)
+
+![WaveForge LA — Time Machine navigation and lazy frame search across a multi-million-sample import](docs/images/FOB-Wave-Logic-b.png)
+
 ---
 
 ## The Hardware You Already Own
