@@ -23,7 +23,7 @@ FOB is the *"now what."*
 | Plugin | What It Does | The Vibe |
 |---|---|---|
 | **PocketForge** | Connect a Pokit Pro or Pokit Meter over Bluetooth. Real-time multimeter, data logger, and a 1-channel oscilloscope (Pokit Pro) with CRT-style phosphor persistence, REL/GATE/SNR math, and Vpp/Freq/RMS overlays. | Your pocket multimeter just became a bench scope. |
-| **WaveForge** | Hook up a Hantek 6022BL. **DSO mode:** 2-channel oscilloscope with live capture, Autoset, FFT with peak markers, XY mode, digital phosphor with intensity control, draggable A/B cursors, reference waveforms, math channel, measurements panel, named presets, CSV/PNG export. **LA mode:** 16-channel logic analyzer with live rolling capture, draggable cursors, pan/zoom, and protocol decoders for UART, I2C, SPI, CAN, 1-Wire, SWD, JTAG, and Modbus/RS-485 (all extracted to tested pure-function modules), CSV export, and a synthetic test pattern. | PulseView, but it does not make your CPU cry. |
+| **WaveForge** | Hook up a Hantek 6022BL. **DSO mode:** 2-channel oscilloscope with live capture, Autoset, FFT with peak markers, XY mode, digital phosphor with intensity control, draggable A/B cursors, reference waveforms, math channel, measurements panel, named presets, CSV/PNG export. **LA mode:** 16-channel logic analyzer with live rolling capture, draggable cursors, pan/zoom, and protocol decoders for UART, I2C, SPI, CAN, 1-Wire, SWD, JTAG, and Modbus/RS-485 (all extracted to tested pure-function modules). **Time Machine:** persistent chunked history buffer (IndexedDB + RLE) lets you import multi-million-sample captures and scrub without loading them all into RAM. **Decode UX:** packet overlays rendered directly on the waveform, a synchronized bottom ticket strip, clickable packets that center the viewport, and lazy prev/next frame navigation across every decoder. Auto-detect picks the protocol and channels for you. CSV export and a synthetic test pattern included. | PulseView, but it does not make your CPU cry. |
 | **LensForge** | Point any USB or IP camera at your board. Multi-pane live video with per-pane focus/exposure controls, SVG annotation layers (crosshair, grid, reticle), one-click snapshots, and video recording into your project folder. | Your USB camera is now a lab microscope with markup. |
 | **NoteForge** | Write markdown project notes with wiki-links (`[[Like This]]`), full-text search, canvas snapshot embeds, and auto-generated project READMEs. Think Obsidian, but it knows what hardware you just captured. | Engineering notebook that auto-links your captures. |
 | **Dashboard** | Project switcher, hardware health at a glance, template-based project creation, and one-click `.zip` export. | The home screen your bench deserves. |
@@ -170,6 +170,8 @@ ForgeOpenBench/
 - **Frontend:** React 18, Vite, TypeScript (strict), Tailwind CSS, uPlot for waveforms, xterm.js for the shell, react-markdown for notes. Zero TypeScript errors in production build. Clean `npm run build`.
 - **Backend:** FastAPI, uvicorn, pydantic. Async everywhere. File I/O is path-traversal guarded. Terminal WebSocket is loopback-only (code 1008 for remote connections).
 - **USB Capture:** For Hantek DSO mode at 4–15 MS/s, a native `hantek-capture` module (C/Rust + libusb async) streams raw bulk transfers over a UNIX socket. Python bridge forwards binary WebSocket frames. Frontend parses `ArrayBuffer` directly into `Float32Array` — zero-copy.
+- **WaveForge LA — Time Machine:** Captures are split into 1M-sample chunks, run-length encoded, and persisted in IndexedDB. A padded-window fast path keeps recent pan/zoom reads synchronous, while `getWindow()` only hits the database for missing chunks. Multi-million-sample imports stay responsive because the whole buffer never needs to live in RAM.
+- **WaveForge LA — Decoders:** Eight protocol stacks (UART, I2C, SPI, CAN, 1-Wire, SWD, JTAG, Modbus/RS-485) are implemented as pure, tested functions. Packet overlays on the canvas and a synchronized ticket strip are driven by the same decoder output. Auto-detect scores each protocol on a 2M-sample probe window and suggests channels, baud, and decoder defaults.
 - **BLE:** Dual-transport abstraction (`IPokitConnection`). Auto-reconnect with exponential backoff. GATT collision avoidance on tab switches. Sequential characteristic reads with settle delays to avoid firmware lockups.
 - **Plugin System:** Runtime-loaded plugins with isolated error boundaries. One crashing plugin cannot take down the app. Each plugin gets a `PluginBus` for scoped events and the `globalBus` for cross-plugin signals.
 - **Theming:** 5 skins (Forge Dark, Forge Light, LCARS, Terminal, Midnight) via CSS custom properties. Skin rehydrates before first paint — no flash on reload.
@@ -186,7 +188,7 @@ ForgeOpenBench/
 
 **Is my data safe?** Yes. FOB is local-first. Your captures live in `Projects/`. Your notes live in `Projects/<name>/README.md`. No cloud. No telemetry. No account. You can run it on an air-gapped machine with no network at all.
 
-**Can I use this for my Arduino project?** Absolutely. PocketForge meters your power rails. WaveForge watches your I2C/SPI buses. LensForge zooms in on your soldering. NoteForge documents what you changed. MonitorForge reads your `Serial.print()` output.
+**Can I use this for my Arduino project?** Absolutely. PocketForge meters your power rails. WaveForge watches your UART, I2C, SPI, 1-Wire, or Modbus traffic. LensForge zooms in on your soldering. NoteForge documents what you changed. MonitorForge reads your `Serial.print()` output.
 
 **Affiliation / compliance:** Forge Open Bench is an independent, community project. It is not affiliated with, endorsed by, or certified by Pokit Innovations, Hantek, Saleae, sigrok, or any other hardware or software vendor. It is not IEC, UL, CE, or safety certified and must not be used as a certified measurement instrument. Always follow your device's safety ratings and use an isolated, rated instrument when mains or high-energy circuits are involved.
 
@@ -225,9 +227,9 @@ The frontend build is clean. `tsc --noEmit` + `vite build` both pass. This is no
 See the [Live Roadmap and Development Journal](https://github.com/vailuc/ForgeOpenBench/discussions/13) for current feature tracking and technical planning. In short:
 
 - **v0.9.x** — Release candidates. All core plugins feature-complete, build clean, installable in under 5 minutes.
-- **v0.9.1** — Final release candidate. Sanitized release tree, ready to ship.
+- **v0.9.1** — Final release candidate. LA Time Machine persistent buffer, eight protocol decoders, packet overlays, and lazy frame navigation are in. Sanitized release tree, ready to ship.
 - **v1.0** — Product identity. Responsive mobile layout, first-run wizard, polished chrome. FOB feels like a real product.
-- **v1.1** — Protocol decoders for DSO, SCPI instrument support, serial monitor maturity.
+- **v1.1** — DSO protocol decoders, SCPI instrument support, serial monitor maturity, live-to-history DVR mode for LA.
 - **v1.2** — Platform. Plugin SDK, API docs, telemetry opt-in, commercial licensing path.
 - **v2.0** — *(future, unscoped)* Multi-device sync, shared capture URLs, multi-user bench sessions.
 
