@@ -177,7 +177,7 @@ ForgeOpenBench/
 - **Backend:** FastAPI, uvicorn, pydantic. Async everywhere. File I/O is path-traversal guarded. Terminal WebSocket is loopback-only (code 1008 for remote connections).
 - **USB Capture:** For Hantek DSO mode at 4–15 MS/s, a native `hantek-capture` module (C/Rust + libusb async) streams raw bulk transfers over a UNIX socket. Python bridge forwards binary WebSocket frames. Frontend parses `ArrayBuffer` directly into `Float32Array` — zero-copy.
 - **WaveForge LA — Time Machine:** Captures are split into 1M-sample chunks, run-length encoded, and persisted in IndexedDB. A padded-window fast path keeps recent pan/zoom reads synchronous, while `getWindow()` only hits the database for missing chunks. Multi-million-sample imports stay responsive because the whole buffer never needs to live in RAM.
-- **WaveForge LA — Decoders:** Eight protocol stacks (UART, I2C, SPI, CAN, 1-Wire, SWD, JTAG, Modbus/RS-485) are implemented as pure, tested functions. Packet overlays on the canvas and a synchronized ticket strip are driven by the same decoder output. Auto-detect scores each protocol on a 2M-sample probe window and suggests channels, baud, and decoder defaults.
+- **WaveForge LA — Decoders:** Nine protocol stacks (UART, I2C, SPI, CAN, 1-Wire, SWD, JTAG, Modbus/RS-485, LIN) are implemented as pure, tested functions. Packet overlays on the canvas and a synchronized ticket strip are driven by the same decoder output. Auto-detect scores each protocol on a 2M-sample probe window and suggests channels, baud, and decoder defaults.
 - **BLE:** Dual-transport abstraction (`IPokitConnection`). Auto-reconnect with exponential backoff. GATT collision avoidance on tab switches. Sequential characteristic reads with settle delays to avoid firmware lockups.
 - **Plugin System:** Runtime-loaded plugins with isolated error boundaries. One crashing plugin cannot take down the app. Each plugin gets a `PluginBus` for scoped events and the `globalBus` for cross-plugin signals.
 - **Theming:** 5 skins (Forge Dark, Forge Light, LCARS, Terminal, Midnight) via CSS custom properties. Skin rehydrates before first paint — no flash on reload.
@@ -233,7 +233,7 @@ The frontend build is clean. `tsc --noEmit` + `vite build` both pass. This is no
 See the [Live Roadmap and Development Journal](https://github.com/vailuc/ForgeOpenBench/discussions/13) for current feature tracking and technical planning. In short:
 
 - **v0.9.x** — Release candidates. All core plugins feature-complete, build clean, installable in under 5 minutes.
-- **v0.9.1** — Final release candidate. LA Time Machine persistent buffer, eight protocol decoders, packet overlays, and lazy frame navigation are in. Sanitized release tree, ready to ship.
+- **v0.9.1** — Final release candidate. LA Time Machine persistent buffer, nine protocol decoders, packet overlays, and lazy frame navigation are in. Sanitized release tree, ready to ship.
 - **v1.0** — Product identity. Responsive mobile layout, first-run wizard, polished chrome. FOB feels like a real product.
 - **v1.1** — DSO protocol decoders, SCPI instrument support, serial monitor maturity, live-to-history DVR mode for LA.
 - **v1.2** — Platform. Plugin SDK, API docs, telemetry opt-in, commercial licensing path.

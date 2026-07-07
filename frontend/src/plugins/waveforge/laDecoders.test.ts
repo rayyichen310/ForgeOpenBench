@@ -9,6 +9,7 @@ import {
   decodeSWD,
   decodeJTAG,
   decodeModbus,
+  decodeLIN,
   generateLaTestPattern,
   makeFakeUartSignal,
   generateCanFrame,
@@ -16,6 +17,8 @@ import {
   generateSwdFrame,
   generateJtagFrame,
   generateModbusFrame,
+  generateLinFrame,
+  findNearestLinFrame,
   MAX_TICKER,
   inferDecoderDefaults,
   autoDetectLaProtocol,
@@ -729,5 +732,107 @@ describe("findNearestI2CFrame", () => {
     const middleFrameStart = (await findNearestI2CFrame(getWindow, RATE, { scl: SCL, sda: SDA }, lastFrameStart, "previous", { windowSize: 200, maxWindows: 10 }))?.startSample ?? -1;
     expect(middleFrameStart).toBeLessThan(lastFrameStart);
     expect(middleFrameStart).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// LIN decoder tests
+// ---------------------------------------------------------------------------
+
+describe("decodeLIN", () => {
+  const RATE = 1_000_000;
+  const BAUD = 19200;
+  const CH = 0;
+
+  it("decodes a synthetic frame with ID 0x00, 2 data bytes, classic checksum", () => {
+    const data = [0x42, 0x84];
+    const samples = generateLinFrame(RATE, CH, BAUD, 0x00, data, "classic");
+    const frames = decodeLIN(samples, RATE, CH, BAUD, "classic");
+    expect(frames.length).toBe(1);
+    const f = frames[0]!;
+    expect(f.id).toBe(0x00);
+    expect(f.data).toEqual(data);
+    expect(f.parityOk).toBe(true);
+    expect(f.checksumOk).toBe(true);
+    expect(f.type).toBe("unconditional");
+  });
+
+  it("decodes a synthetic frame with enhanced checksum", () => {
+    const data = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+    const samples = generateLinFrame(RATE, CH, BAUD, 0x04, data, "enhanced");
+    const frames = decodeLIN(samples, RATE, CH, BAUD, "enhanced");
+    expect(frames.length).toBe(1);
+    const f = frames[0]!;
+    expect(f.id).toBe(0x04);
+    expect(f.data).toEqual(data);
+    expect(f.parityOk).toBe(true);
+    expect(f.checksumOk).toBe(true);
+  });
+
+  it("flags a PID parity error when parity is wrong", () => {
+    const data = [0x42, 0x84];
+    const samples = generateLinFrame(RATE, CH, BAUD, 0x00, data, "classic");
+    // Corrupt PID bit 6 (parity bit P0) — flip the entire bit period so the decoder sees it.
+    const spb = Math.floor(RATE / BAUD);
+    const pidBit6Start = (2 + 13 + 1 + 8 + 6) * spb;
+    for (let k = 0; k < spb; k++) samples[pidBit6Start + k] ^= (1 << CH);
+    const frames = decodeLIN(samples, RATE, CH, BAUD, "classic");
+    expect(frames.length).toBe(1);
+    expect(frames[0]!.parityOk).toBe(false);
+  });
+
+  it("flags a checksum error when checksum is wrong", () => {
+    const data = [0x42, 0x84];
+    const samples = generateLinFrame(RATE, CH, BAUD, 0x00, data, "classic");
+    // Flip the entire second data byte bit 0 period to corrupt the checksum.
+    const spb = Math.floor(RATE / BAUD);
+    const dataBitPos = (2 + 13 + 1 + 8 + 8 + 8) * spb;
+    for (let k = 0; k < spb; k++) samples[dataBitPos + k] ^= (1 << CH);
+    const frames = decodeLIN(samples, RATE, CH, BAUD, "classic");
+    expect(frames.length).toBe(1);
+    expect(frames[0]!.checksumOk).toBe(false);
+  });
+
+  it("decodes multiple frames in a single capture", () => {
+    const frame1 = generateLinFrame(RATE, CH, BAUD, 0x00, [0x01, 0x02], "classic");
+    const frame2 = generateLinFrame(RATE, CH, BAUD, 0x01, [0x03, 0x04], "classic");
+    const combined = new Uint8Array(frame1.length + frame2.length);
+    combined.set(frame1, 0);
+    combined.set(frame2, frame1.length);
+    const frames = decodeLIN(combined, RATE, CH, BAUD, "classic");
+    expect(frames.length).toBe(2);
+    expect(frames[0]!.id).toBe(0x00);
+    expect(frames[1]!.id).toBe(0x01);
+  });
+});
+
+describe("findNearestLinFrame", () => {
+  const RATE = 1_000_000;
+  const BAUD = 19200;
+  const CH = 0;
+
+  it("finds next and previous frames in a multi-frame capture", async () => {
+    const frame1 = generateLinFrame(RATE, CH, BAUD, 0x00, [0x01, 0x02], "classic");
+    const frame2 = generateLinFrame(RATE, CH, BAUD, 0x01, [0x03, 0x04], "classic");
+    const frame3 = generateLinFrame(RATE, CH, BAUD, 0x02, [0x05, 0x06, 0x07, 0x08], "classic");
+    const combined = new Uint8Array(frame1.length + frame2.length + frame3.length);
+    combined.set(frame1, 0);
+    combined.set(frame2, frame1.length);
+    combined.set(frame3, frame1.length + frame2.length);
+
+    const getWindow = async (start: number, count: number) => {
+      const end = Math.min(start + count, combined.length);
+      return combined.slice(start, end);
+    };
+
+    // From frame1, find next → should be frame2
+    const nextFrame = await findNearestLinFrame(getWindow, RATE, { ch: CH, baud: BAUD, checksum: "classic" }, frame1.length - 1, "next", { windowSize: 5000, maxWindows: 10 });
+    expect(nextFrame).not.toBeNull();
+    expect(nextFrame!.startSample).toBeGreaterThanOrEqual(frame1.length);
+
+    // From frame3, find previous → should be frame2
+    const prevFrame = await findNearestLinFrame(getWindow, RATE, { ch: CH, baud: BAUD, checksum: "classic" }, frame1.length + frame2.length + frame3.length - 1, "previous", { windowSize: 5000, maxWindows: 10 });
+    expect(prevFrame).not.toBeNull();
+    expect(prevFrame!.startSample).toBeLessThan(frame1.length + frame2.length + frame3.length);
   });
 });

@@ -87,7 +87,21 @@ export interface ModbusFrame {
   bitSamples?: number; // UART bit period, for clock-aware UI rendering
 }
 
-export type DecoderTab = "uart" | "i2c" | "spi" | "can" | "onewire" | "swd" | "jtag" | "modbus";
+export interface LINFrame {
+  startSample: number;
+  endSample: number;
+  ts: number;
+  id: number;            // 6-bit ID
+  pid: number;           // full 8-bit protected identifier
+  parityOk: boolean;
+  data: number[];
+  checksum: number;
+  checksumOk: boolean;
+  type: "unconditional" | "diagnostic" | "user" | "reserved";
+  bitSamples?: number;   // measured bit period for clock-aware UI rendering
+}
+
+export type DecoderTab = "uart" | "i2c" | "spi" | "can" | "onewire" | "swd" | "jtag" | "modbus" | "lin";
 
 export interface LaCapture {
   sampleRate: number;
@@ -108,6 +122,7 @@ export interface DecoderDefaults {
   swd: { swdio: number; swclk: number };
   jtag: { tck: number; tms: number; tdi: number; tdo: number };
   modbus: { ch: number; baud: number; parity: "none" | "even" | "odd" };
+  lin: { ch: number; baud: number; checksum: "classic" | "enhanced" };
 }
 
 export function inferDecoderDefaults(capture: LaCapture): DecoderDefaults {
@@ -143,38 +158,43 @@ export function inferDecoderDefaults(capture: LaCapture): DecoderDefaults {
   const jtagDefaults = { tck: jtagTck >= 0 ? jtagTck : 0, tms: jtagTms >= 0 ? jtagTms : 1, tdi: jtagTdi >= 0 ? jtagTdi : 2, tdo: jtagTdo >= 0 ? jtagTdo : 3 };
   const modbusCh = find(["rs485", "modbus", "485"]);
   const modbusDefaults = { ch: modbusCh >= 0 ? modbusCh : uartCh, baud: 9600, parity: "even" as const };
+  const linCh = find(["lin"]);
+  const linDefaults = { ch: linCh >= 0 ? linCh : 0, baud: 19200, checksum: "classic" as const };
   if (scl >= 0 && sda >= 0) {
-    return { tab: "i2c", uart: { baud: 115200, ch: uartCh }, i2c: { scl, sda, addrBits: 7 }, spi: { mosi: mosi >= 0 ? mosi : 0, miso: miso >= 0 ? miso : 0, sck: sck >= 0 ? sck : 1, cs: cs >= 0 ? cs : -1, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults };
+    return { tab: "i2c", uart: { baud: 115200, ch: uartCh }, i2c: { scl, sda, addrBits: 7 }, spi: { mosi: mosi >= 0 ? mosi : 0, miso: miso >= 0 ? miso : 0, sck: sck >= 0 ? sck : 1, cs: cs >= 0 ? cs : -1, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults, lin: linDefaults };
   }
   const definedLabels = labels.filter((l) => l !== undefined && l !== "");
   const allNumeric = definedLabels.length > 0 && definedLabels.every(l => /^\d+$/.test(l));
   const detected = detectSpiChannels(capture.samples, capture.width);
   if ((mosi >= 0 && sck >= 0) || (sck >= 0 && cs >= 0)) {
-    return { tab: "spi", uart: { baud: 115200, ch: uartCh }, i2c: { scl: scl >= 0 ? scl : 1, sda: sda >= 0 ? sda : 2, addrBits: 7 }, spi: { mosi: mosi >= 0 ? mosi : 0, miso: miso >= 0 ? miso : 1, sck: sck >= 0 ? sck : 2, cs: cs >= 0 ? cs : -1, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults };
+    return { tab: "spi", uart: { baud: 115200, ch: uartCh }, i2c: { scl: scl >= 0 ? scl : 1, sda: sda >= 0 ? sda : 2, addrBits: 7 }, spi: { mosi: mosi >= 0 ? mosi : 0, miso: miso >= 0 ? miso : 1, sck: sck >= 0 ? sck : 2, cs: cs >= 0 ? cs : -1, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults, lin: linDefaults };
   }
   if (capture.source === "sigrok-sr" && allNumeric && definedLabels.length <= 4) {
-    return { tab: "spi", uart: { baud: 115200, ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: -1, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults };
+    return { tab: "spi", uart: { baud: 115200, ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: -1, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults, lin: linDefaults };
   }
   if (swdClk >= 0 && swdDio >= 0) {
-    return { tab: "swd", uart: { baud: 115200, ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults };
+    return { tab: "swd", uart: { baud: 115200, ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults, lin: linDefaults };
   }
   if (jtagTck >= 0 && jtagTms >= 0) {
-    return { tab: "jtag", uart: { baud: 115200, ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults };
+    return { tab: "jtag", uart: { baud: 115200, ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults, lin: linDefaults };
   }
   if (modbusCh >= 0) {
-    return { tab: "modbus", uart: { baud: 115200, ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults };
+    return { tab: "modbus", uart: { baud: 115200, ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults, lin: linDefaults };
+  }
+  if (linCh >= 0) {
+    return { tab: "lin", uart: { baud: 115200, ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults, lin: linDefaults };
   }
   // TX/RX labels strongly indicate UART; prefer that over CAN/1-Wire fallbacks.
   if (tx >= 0) {
-    return { tab: "uart", uart: { baud: estimateUartBaud(capture.samples, capture.sampleRate, uartCh), ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults };
+    return { tab: "uart", uart: { baud: estimateUartBaud(capture.samples, capture.sampleRate, uartCh), ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults, lin: linDefaults };
   }
   if (canCh >= 0) {
-    return { tab: "can", uart: { baud: 115200, ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults };
+    return { tab: "can", uart: { baud: 115200, ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults, lin: linDefaults };
   }
   if (oneWireCh >= 0) {
-    return { tab: "onewire", uart: { baud: 115200, ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults };
+    return { tab: "onewire", uart: { baud: 115200, ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults, lin: linDefaults };
   }
-  return { tab: "uart", uart: { baud: estimateUartBaud(capture.samples, capture.sampleRate, uartCh), ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults };
+  return { tab: "uart", uart: { baud: estimateUartBaud(capture.samples, capture.sampleRate, uartCh), ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults, lin: linDefaults };
 }
 
 export function estimateUartBaud(samples: Uint8Array, sampleRate: number, ch: number): number {
@@ -258,6 +278,7 @@ export interface AutoDetectResult {
   swd?: { swdio: number; swclk: number };
   jtag?: { tck: number; tms: number; tdi: number; tdo: number };
   modbus?: { ch: number; baud: number; parity: "none" | "even" | "odd" };
+  lin?: { ch: number; baud: number; checksum: "classic" | "enhanced" };
 }
 
 /**
@@ -319,6 +340,13 @@ export function autoDetectLaProtocol(capture: LaCapture): AutoDetectResult {
     const frames = decodeModbus(samples, rate, labelDefaults.modbus.ch, labelDefaults.modbus.baud, labelDefaults.modbus.parity);
     const validFrames = frames.filter(f => f.crcOk).length;
     if (validFrames > 0) return { tab: "modbus", score: validFrames, reason: `Modbus RTU ${labelDefaults.modbus.baud.toLocaleString()} baud on D${labelDefaults.modbus.ch} (labels)`, modbus: labelDefaults.modbus };
+  }
+  if (labelDefaults.tab === "lin" && labelDefaults.lin) {
+    for (const baud of LIN_COMMON_BAUDS) {
+      const frames = decodeLIN(samples, rate, labelDefaults.lin.ch, baud, labelDefaults.lin.checksum);
+      const valid = frames.filter(f => f.parityOk && f.checksumOk).length;
+      if (valid > 0) return { tab: "lin", score: valid * 3, reason: `LIN ${baud.toLocaleString()} baud on D${labelDefaults.lin.ch} (labels)`, lin: { ch: labelDefaults.lin.ch, baud, checksum: labelDefaults.lin.checksum } };
+    }
   }
 
   const active = getActiveChannels(samples, width);
@@ -415,6 +443,17 @@ export function autoDetectLaProtocol(capture: LaCapture): AutoDetectResult {
         if (score > best.score) {
           best = { tab: "modbus", score, reason: `Modbus RTU ${baud.toLocaleString()} baud D${ch}`, modbus: { ch, baud, parity } };
         }
+      }
+    }
+  }
+
+  // LIN: try each active channel at common baud rates.
+  for (const ch of active) {
+    for (const baud of LIN_COMMON_BAUDS) {
+      const frames = decodeLIN(samples, rate, ch, baud, "classic");
+      const score = frames.filter(f => f.parityOk && f.checksumOk).length * 3;
+      if (score > best.score) {
+        best = { tab: "lin", score, reason: `LIN ${baud.toLocaleString()} baud D${ch}`, lin: { ch, baud, checksum: "classic" } };
       }
     }
   }
@@ -1768,6 +1807,193 @@ export function generateModbusFrame(
   for (const b of bytes) byte(b);
   // Trailing idle
   pushBit(1, Math.round(spb * 11 * 3.5));
+
+  const samples = new Uint8Array(bits.length);
+  for (let i = 0; i < bits.length; i++) samples[i] = bits[i] << channel;
+  return samples;
+}
+
+// --- LIN decoder ---
+
+const LIN_COMMON_BAUDS = [2400, 9600, 19200];
+
+// LIN 2.x data length table indexed by 6-bit ID (0–15 → 2,2,4,4,8,8,8,8,2,2,4,4,8,8,1,2; 16–63 → 8).
+const LIN_DATA_LENGTH: number[] = (() => {
+  const tbl: number[] = [];
+  const low: number[] = [2, 2, 4, 4, 8, 8, 8, 8, 2, 2, 4, 4, 8, 8, 1, 2];
+  for (let i = 0; i < 64; i++) tbl.push(i < 16 ? low[i]! : 8);
+  return tbl;
+})();
+
+function linParityOk(pid: number): boolean {
+  const id = pid & 0x3f;
+  const p0 = ((id >> 0) ^ (id >> 1) ^ (id >> 2) ^ (id >> 4)) & 1;
+  const p1 = ((id >> 1) ^ (id >> 3) ^ (id >> 4) ^ (id >> 5)) & 1;
+  return ((p0 << 6) | (p1 << 7)) === (pid & 0xc0);
+}
+
+function linChecksum(data: number[], pid: number, mode: "classic" | "enhanced"): number {
+  let sum = mode === "enhanced" ? pid : 0;
+  for (const d of data) sum = (sum + d) & 0xff;
+  return (~sum) & 0xff;
+}
+
+function linFrameType(id: number): "unconditional" | "diagnostic" | "user" | "reserved" {
+  if (id === 0x3c || id === 0x3d) return "diagnostic";
+  if (id === 0x3e) return "reserved";
+  if (id >= 0x3f) return "user";
+  return "unconditional";
+}
+
+export function decodeLIN(
+  samples: Uint8Array,
+  sampleRate: number,
+  channel: number,
+  baud: number,
+  checksumMode: "classic" | "enhanced" = "classic"
+): LINFrame[] {
+  const spb = Math.max(1, Math.floor(sampleRate / baud));
+  const bit = (s: number) => (samples[Math.max(0, Math.min(samples.length - 1, s))] >> channel) & 1;
+  const frames: LINFrame[] = [];
+  let i = 0;
+  const breakThreshold = Math.round(13 * spb);
+
+  while (i < samples.length - 1) {
+    // Detect break: falling edge followed by dominant (low) for >= 13 bit times.
+    if (bit(i) === 1 && bit(i + 1) === 0) {
+      const breakStart = i + 1;
+      let lowRun = 0;
+      let j = breakStart;
+      while (j < samples.length && bit(j) === 0) { lowRun++; j++; }
+      if (lowRun < breakThreshold) { i++; continue; }
+
+      // Break delimiter: at least 1 recessive bit — j already points to the first recessive sample.
+      if (j >= samples.length) { i = j; continue; }
+
+      // Sync field starts after the 1-bit delimiter.
+      const syncStart = j + spb;
+      const sampleBit = (n: number) => bit(Math.round(syncStart + (n + 0.5) * spb));
+      const readByte = (offset: number) => {
+        let v = 0;
+        for (let b = 0; b < 8; b++) v |= (sampleBit(offset + b) << b);
+        return v;
+      };
+
+      // Sync byte should be 0x55 (LSB first: 1,0,1,0,1,0,1,0)
+      const syncByte = readByte(0);
+      if (syncByte !== 0x55) { i = syncStart + Math.round(8 * spb); continue; }
+
+      // PID
+      const pidOffset = 8;
+      const pid = readByte(pidOffset);
+      const id = pid & 0x3f;
+      const parityOk = linParityOk(pid);
+
+      // Data length
+      const dataLen = LIN_DATA_LENGTH[id] ?? 8;
+      const dataOffset = pidOffset + 8;
+      const data: number[] = [];
+      for (let b = 0; b < dataLen; b++) data.push(readByte(dataOffset + b * 8));
+
+      // Checksum
+      const ckOffset = dataOffset + dataLen * 8;
+      const checksum = readByte(ckOffset);
+      const expectedCk = linChecksum(data, pid, checksumMode);
+      const checksumOk = checksum === expectedCk;
+
+      const frameEndSample = syncStart + Math.round((ckOffset + 8) * spb);
+      const frameStartSample = breakStart;
+
+      frames.push({
+        startSample: frameStartSample,
+        endSample: frameEndSample,
+        ts: frameStartSample / sampleRate,
+        id,
+        pid,
+        parityOk,
+        data,
+        checksum,
+        checksumOk,
+        type: linFrameType(id),
+        bitSamples: Math.max(1, Math.round(spb)),
+      });
+
+      i = frameEndSample;
+    } else {
+      i++;
+    }
+  }
+  return frames;
+}
+
+export function findNearestLinFrame(
+  getWindow: (startSample: number, sampleCount: number) => Promise<Uint8Array>,
+  sampleRate: number,
+  config: { ch: number; baud: number; checksum: "classic" | "enhanced" },
+  centerSample: number,
+  direction: "next" | "previous",
+  options?: { windowSize?: number; maxWindows?: number }
+): Promise<FrameSearchResult | null> {
+  return searchFrames(
+    getWindow,
+    (window) => decodeLIN(window, sampleRate, config.ch, config.baud, config.checksum).map(r => ({
+      startSample: r.startSample,
+      endSample: r.endSample,
+      ts: r.ts,
+      type: r.type,
+      error: !r.parityOk || !r.checksumOk,
+    })),
+    centerSample,
+    direction,
+    options
+  );
+}
+
+// Generate a synthetic LIN frame on the given channel.
+export function generateLinFrame(
+  sampleRate: number,
+  channel: number,
+  baud: number,
+  id: number,
+  data: number[],
+  checksumMode: "classic" | "enhanced" = "classic"
+): Uint8Array {
+  const spb = Math.max(1, Math.floor(sampleRate / baud));
+  const bits: number[] = [];
+  const pushBit = (b: number, n: number) => { for (let i = 0; i < n; i++) bits.push(b); };
+
+  // Compute PID with parity
+  const p0 = ((id >> 0) ^ (id >> 1) ^ (id >> 2) ^ (id >> 4)) & 1;
+  const p1 = ((id >> 1) ^ (id >> 3) ^ (id >> 4) ^ (id >> 5)) & 1;
+  const pid = (id & 0x3f) | (p0 << 6) | (p1 << 7);
+
+  const ck = linChecksum(data, pid, checksumMode);
+
+  // Idle
+  pushBit(1, spb * 2);
+
+  // Break: dominant for 13+ bit times
+  pushBit(0, spb * 13);
+  // Break delimiter: recessive for 1 bit time
+  pushBit(1, spb);
+
+  // Sync byte 0x55 (LSB first)
+  const syncByte = 0x55;
+  for (let b = 0; b < 8; b++) pushBit((syncByte >> b) & 1, spb);
+
+  // PID (LSB first)
+  for (let b = 0; b < 8; b++) pushBit((pid >> b) & 1, spb);
+
+  // Data bytes (LSB first)
+  for (const d of data) {
+    for (let b = 0; b < 8; b++) pushBit((d >> b) & 1, spb);
+  }
+
+  // Checksum (LSB first)
+  for (let b = 0; b < 8; b++) pushBit((ck >> b) & 1, spb);
+
+  // Trailing idle
+  pushBit(1, spb * 2);
 
   const samples = new Uint8Array(bits.length);
   for (let i = 0; i < bits.length; i++) samples[i] = bits[i] << channel;

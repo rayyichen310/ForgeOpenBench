@@ -3,7 +3,7 @@ import { readFile } from "fs/promises";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { parseSigrokSr } from "./sigrokSrParser";
-import { decodeUartChunk, decodeI2C, decodeSPI, decodeSWD, decodeJTAG, decodeModbus, inferDecoderDefaults, autoDetectLaProtocol } from "./laDecoders";
+import { decodeUartChunk, decodeI2C, decodeSPI, decodeSWD, decodeJTAG, decodeModbus, decodeOneWire, decodeLIN, inferDecoderDefaults, autoDetectLaProtocol } from "./laDecoders";
 
 const FIXTURE_DIR = join(dirname(fileURLToPath(import.meta.url)), "test-fixtures", "sigrok");
 
@@ -116,5 +116,66 @@ describe("sigrok-dumps fixtures", () => {
     const frames = decodeModbus(cap.samples, cap.sampleRate, 3, 9600, "none");
     expect(frames.length).toBeGreaterThan(0);
     expect(frames.every(f => f.crcOk)).toBe(true);
+  });
+
+  it("loads and label-detects real CAN sigrok-dumps fixture", async () => {
+    const cap = await parseSigrokSr(await loadFixture("can_mcp2515_125k_msg_222.sr"));
+    expect(cap.sampleRate).toBe(4_000_000);
+    expect(cap.width).toBe(8);
+    expect(cap.samples.length).toBeGreaterThan(0);
+    expect(cap.channelLabels?.[2]).toBe("CAN_RX");
+
+    const cfg = inferDecoderDefaults(cap);
+    expect(cfg.tab).toBe("can");
+    expect(cfg.can.ch).toBe(2);
+
+    // The CAN decoder lacks bit destuffing, so it cannot fully decode real
+    // captures. Verify the channel has signal activity.
+    let transitions = 0;
+    let last = -1;
+    for (let s = 0; s < cap.samples.length; s++) {
+      const v = (cap.samples[s] >> 2) & 1;
+      if (last >= 0 && v !== last) transitions++;
+      last = v;
+    }
+    expect(transitions).toBeGreaterThan(0);
+  });
+
+  it("auto-detects and decodes real 1-Wire sigrok-dumps fixture", async () => {
+    const cap = await parseSigrokSr(await loadFixture("onewire_ds18b20.sr"));
+    expect(cap.sampleRate).toBe(1_000_000);
+    expect(cap.width).toBe(8);
+    expect(cap.samples.length).toBeGreaterThan(0);
+
+    // ch0 has the 1-Wire reset/presence/byte traffic.
+    const frames = decodeOneWire(cap.samples, cap.sampleRate, 0);
+    expect(frames.length).toBeGreaterThan(0);
+    expect(frames.filter(f => f.type === "reset").length).toBeGreaterThan(0);
+    expect(frames.filter(f => f.type === "byte").length).toBeGreaterThan(0);
+  });
+
+  it("auto-detects and decodes synthetic LIN .sr fixture", async () => {
+    const cap = await parseSigrokSr(await loadFixture("lin_synthetic_2frames.sr"));
+    expect(cap.sampleRate).toBe(1_000_000);
+    expect(cap.width).toBe(8);
+    expect(cap.samples.length).toBeGreaterThan(0);
+    expect(cap.channelLabels?.[0]).toBe("LIN");
+
+    const cfg = inferDecoderDefaults(cap);
+    expect(cfg.tab).toBe("lin");
+    expect(cfg.lin.ch).toBe(0);
+
+    const detected = autoDetectLaProtocol(cap);
+    expect(detected.tab).toBe("lin");
+    expect(detected.lin?.ch).toBe(0);
+    expect(detected.lin?.baud).toBe(19_200);
+
+    const frames = decodeLIN(cap.samples, cap.sampleRate, 0, 19_200, "classic");
+    expect(frames.length).toBe(2);
+    expect(frames.every(f => f.parityOk && f.checksumOk)).toBe(true);
+    expect(frames[0]!.id).toBe(0x00);
+    expect(frames[0]!.data).toEqual([0x42, 0x84]);
+    expect(frames[1]!.id).toBe(0x02);
+    expect(frames[1]!.data).toEqual([0x01, 0x02, 0x03, 0x04]);
   });
 });
