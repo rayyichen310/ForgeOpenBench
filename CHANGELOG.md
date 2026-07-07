@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.9.1-rc26] — 2026-07-07
+
+### Added
+- **WaveForge LA — LIN protocol decoder**
+  - Full LIN decoder: break detection (≥13 bit times dominant), sync byte (0x55), PID with parity, data bytes per LIN 2.x length table, classic/enhanced checksum.
+  - Frame navigation via `findNearestLinFrame`.
+  - `inferDecoderDefaults` recognizes LIN channel labels; `autoDetectLaProtocol` scores LIN against common baud rates (2400, 9600, 19200).
+  - UI integration: LIN tab in `LaDecodersPanel` (channel, baud, checksum controls), canvas overlays in `LaCanvas`, frame navigation in `WaveformLaView`.
+- **WaveForge LA — new sigrok-dumps fixtures**
+  - CAN: `can_mcp2515_125k_msg_222.sr` (real MCP2515 capture, 4 MS/s, 125 kbits, label `CAN_RX`).
+  - 1-Wire: `onewire_ds18b20.sr` (real DS18B20 capture, 1 MS/s, reset/presence/byte frames).
+  - LIN: `lin_synthetic_2frames.sr` (synthetic, 1 MS/s, 19200 baud, 2 frames with valid parity/checksum).
+  - `fetch-fixtures.sh` updated with all new URLs and LIN generation step.
+  - `sigrokFixtures.test.ts` now covers all 9 decoder protocols (150 tests).
+
+### Known Limitations
+- CAN decoder lacks bit destuffing — real captures cannot be fully decoded yet (issue #14).
+
 ## [0.9.1-rc25] — 2026-07-05
 
 ### Added
