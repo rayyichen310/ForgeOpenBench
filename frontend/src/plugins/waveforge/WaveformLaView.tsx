@@ -11,7 +11,7 @@ import type { LaChannel } from "./laChannelConfig";
 import type { LaAcquireMode } from "./laAcquireModes";
 import type { LaTriggerConfig } from "./laAcquireModes";
 import type { LaCapture, DecoderDefaults } from "./laDecoders";
-import { inferDecoderDefaults, generateLaTestPattern, decodeUartChunk, decodeI2C, decodeSPI, decodeCAN, decodeOneWire, decodeSWD, decodeJTAG, decodeModbus, findNearestUartFrame, findNearestI2CFrame, findNearestSpiFrame, findNearestCanFrame, findNearestOneWireFrame, findNearestSwdFrame, findNearestJtagFrame, findNearestModbusFrame } from "./laDecoders";
+import { inferDecoderDefaults, generateLaTestPattern, decodeUartChunk, decodeI2C, decodeSPI, decodeCAN, decodeOneWire, decodeSWD, decodeJTAG, decodeModbus, decodeLIN, findNearestUartFrame, findNearestI2CFrame, findNearestSpiFrame, findNearestCanFrame, findNearestOneWireFrame, findNearestSwdFrame, findNearestJtagFrame, findNearestModbusFrame, findNearestLinFrame } from "./laDecoders";
 import { parseLaCsv, parseLaJson, detectLaFormat, streamSigrokSr } from "./laImport";
 import { downloadLaCapture } from "./laExport";
 import { LaHistoryBuffer, type LaCaptureMeta } from "./LaHistoryBuffer";
@@ -223,9 +223,10 @@ export function WaveformLaView(props: Props) {
     swd: decoderDefaults.swd,
     jtag: decoderDefaults.jtag,
     modbus: decoderDefaults.modbus,
+    lin: decoderDefaults.lin,
   });
   useEffect(() => {
-    setDecoderState({ tab: decoderDefaults.tab, uart: decoderDefaults.uart, i2c: decoderDefaults.i2c, spi: decoderDefaults.spi, can: decoderDefaults.can, onewire: decoderDefaults.onewire, swd: decoderDefaults.swd, jtag: decoderDefaults.jtag, modbus: decoderDefaults.modbus });
+    setDecoderState({ tab: decoderDefaults.tab, uart: decoderDefaults.uart, i2c: decoderDefaults.i2c, spi: decoderDefaults.spi, can: decoderDefaults.can, onewire: decoderDefaults.onewire, swd: decoderDefaults.swd, jtag: decoderDefaults.jtag, modbus: decoderDefaults.modbus, lin: decoderDefaults.lin });
   }, [decoderDefaults]);
 
   const handleFrameNavigate = useCallback(async (direction: "next" | "previous") => {
@@ -252,6 +253,8 @@ export function WaveformLaView(props: Props) {
       result = await findNearestJtagFrame(getWindow, sampleRate, decoderState.jtag, centerSample, direction, { windowSize: 100_000, maxWindows: 20 });
     } else if (tab === "modbus" && decoderState.modbus) {
       result = await findNearestModbusFrame(getWindow, sampleRate, decoderState.modbus, centerSample, direction, { windowSize: 100_000, maxWindows: 20 });
+    } else if (tab === "lin" && decoderState.lin) {
+      result = await findNearestLinFrame(getWindow, sampleRate, decoderState.lin, centerSample, direction, { windowSize: 100_000, maxWindows: 20 });
     }
     if (result) handlePacketClick(result.startSample);
   }, [activeCaptureId, captureMeta, decoderState, panSample, zoomSamples]);
@@ -350,6 +353,11 @@ export function WaveformLaView(props: Props) {
   const modbusRows = useMemo(() => {
     if (!canDecode || decoderState.tab !== "modbus" || !decoderState.modbus) return [];
     return decodeModbus(windowedCapture.samples, windowedCapture.sampleRate, decoderState.modbus.ch, decoderState.modbus.baud, decoderState.modbus.parity).map(r => ({ ...r, startSample: r.startSample + panSample, endSample: r.endSample + panSample }));
+  }, [windowedCapture, decoderState, panSample, canDecode]);
+
+  const linRows = useMemo(() => {
+    if (!canDecode || decoderState.tab !== "lin" || !decoderState.lin) return [];
+    return decodeLIN(windowedCapture.samples, windowedCapture.sampleRate, decoderState.lin.ch, decoderState.lin.baud, decoderState.lin.checksum).map(r => ({ ...r, startSample: r.startSample + panSample, endSample: r.endSample + panSample }));
   }, [windowedCapture, decoderState, panSample, canDecode]);
 
   const totalSamples = useMemo(() => captureMeta?.totalSamples ?? 0, [captureMeta]);
@@ -695,6 +703,7 @@ export function WaveformLaView(props: Props) {
                 swdRows={swdRows}
                 jtagRows={jtagRows}
                 modbusRows={modbusRows}
+                linRows={linRows}
                 decoderChannel={decoderState.uart?.ch}
                 decoderSda={decoderState.i2c?.sda}
                 decoderMosi={decoderState.spi?.mosi}
@@ -703,6 +712,7 @@ export function WaveformLaView(props: Props) {
                 decoderSwd={decoderState.swd}
                 decoderJtag={decoderState.jtag}
                 decoderModbus={decoderState.modbus}
+                decoderLin={decoderState.lin}
                 showCursors={showCursors}
                 cursorA={cursorA.sample}
                 cursorB={cursorB.sample}
@@ -750,6 +760,7 @@ export function WaveformLaView(props: Props) {
               defaultSwd={decoderDefaults.swd}
               defaultJtag={decoderDefaults.jtag}
               defaultModbus={decoderDefaults.modbus}
+              defaultLin={decoderDefaults.lin}
               uartRows={uartRows}
               i2cRows={i2cRows}
               spiRows={spiRows}
@@ -758,6 +769,7 @@ export function WaveformLaView(props: Props) {
               swdRows={swdRows}
               jtagRows={jtagRows}
               modbusRows={modbusRows}
+              linRows={linRows}
               onChange={setDecoderState}
               onPacketClick={handlePacketClick}
               onFrameNavigate={handleFrameNavigate}

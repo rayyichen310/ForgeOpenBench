@@ -1,7 +1,7 @@
 import { useRef, useEffect, useCallback, useState } from "react";
 import type { LaChannel } from "./laChannelConfig";
 import { CHANNEL_COLORS, DEFAULT_LABEL_WIDTH } from "./laChannelConfig";
-import type { DecoderTab, TickerRow, I2CFrame, SPIFrame, CANFrame, OneWireFrame, SWDFrame, JTAGFrame, ModbusFrame } from "./laDecoders";
+import type { DecoderTab, TickerRow, I2CFrame, SPIFrame, CANFrame, OneWireFrame, SWDFrame, JTAGFrame, ModbusFrame, LINFrame } from "./laDecoders";
 
 interface Props {
   samples: Uint8Array;
@@ -20,6 +20,7 @@ interface Props {
   swdRows?: SWDFrame[];
   jtagRows?: JTAGFrame[];
   modbusRows?: ModbusFrame[];
+  linRows?: LINFrame[];
   decoderChannel?: number;
   decoderSda?: number;
   decoderMosi?: number;
@@ -28,6 +29,7 @@ interface Props {
   decoderSwd?: { swdio: number; swclk: number };
   decoderJtag?: { tck: number; tms: number; tdi: number; tdo: number };
   decoderModbus?: { ch: number; baud: number; parity: "none" | "even" | "odd" };
+  decoderLin?: { ch: number; baud: number; checksum: "classic" | "enhanced" };
   showCursors?: boolean;
   cursorA?: number;
   cursorB?: number;
@@ -407,6 +409,16 @@ export function LaCanvas(props: Props) {
         props.modbusRows.forEach(r => {
           const label = `A${r.addr} F${r.func.toString(16).padStart(2, "0").toUpperCase()} ${r.data.map(b => b.toString(16).padStart(2, "0").toUpperCase()).join(" ")}`;
           drawPacket(r.startSample, r.endSample, chIdx, label, color, !r.crcOk);
+        });
+      }
+    }
+    if (props.decoderTab === "lin" && props.linRows && props.decoderLin) {
+      const chIdx = visible.findIndex(c => c.id === props.decoderLin?.ch);
+      if (chIdx >= 0) {
+        const color = visible[chIdx]?.color || CHANNEL_COLORS[props.decoderLin.ch];
+        props.linRows.forEach(r => {
+          const label = `ID 0x${r.id.toString(16).padStart(2, "0").toUpperCase()} [${r.data.map(b => b.toString(16).padStart(2, "0").toUpperCase()).join(" ")}]`;
+          drawPacket(r.startSample, r.endSample, chIdx, label, color, !r.parityOk || !r.checksumOk);
         });
       }
     }
