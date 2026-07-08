@@ -10,6 +10,7 @@ interface Props {
   panSample?: number;
   totalSamples: number;
   onPanChange?: (pan: number) => void;
+  sampleStride?: number;
 }
 
 const OVERVIEW_H = 64;
@@ -43,6 +44,7 @@ export function LaOverview(props: Props) {
 
     const visible = props.channels.filter(c => c.visible);
     const bps = props.width === 16 ? 2 : 1;
+    const stride = props.sampleStride ?? 1;
     const sPerPx = totalSamples / cssW;
 
     // Background
@@ -61,7 +63,7 @@ export function LaOverview(props: Props) {
       ctx.beginPath();
 
       const readBit = (sample: number) => {
-        const off = sample * bps;
+        const off = Math.floor(sample / stride) * bps;
         const lo = props.samples[off] ?? 0;
         const hi = bps === 2 ? (props.samples[off + 1] ?? 0) : 0;
         const v = (hi << 8) | lo;

@@ -12,7 +12,6 @@ WebSocket: ws://localhost:8766
 """
 
 import asyncio
-import base64
 import collections
 import json
 import logging
@@ -343,6 +342,39 @@ async def _broadcast_binary(data: bytes) -> None:
         except Exception:
             dead.add(ws)
     state.clients -= dead
+
+
+def _build_la_binary_frame(
+    rate_hz: int,
+    width: int,
+    raw: bytes,
+    timestamp_us: Optional[int] = None,
+) -> bytes:
+    """Build a binary WebSocket frame for LA data using the Rust-frame format.
+
+    Frame layout (little-endian):
+      [0..3]   msg_len: u32  (24 + len(raw))
+      [4..7]   rate_hz: u32
+      [8..11]  n_bytes: u32
+      [12..19] timestamp_us: u64
+      [20..23] reserved: u32  (reserved[0] = sample width 8|16)
+      [24..]   raw sample bytes
+    """
+    n_bytes = len(raw)
+    if width not in (8, 16):
+        width = 8
+    reserved = width & 0xFF
+    msg_len = 24 + n_bytes
+    ts = timestamp_us if timestamp_us is not None else int(time.time() * 1_000_000)
+    return (
+        msg_len.to_bytes(4, "little")
+        + rate_hz.to_bytes(4, "little")
+        + n_bytes.to_bytes(4, "little")
+        + ts.to_bytes(8, "little")
+        + reserved.to_bytes(4, "little")
+        + raw
+    )
+
 
 # ---------------------------------------------------------------------------
 # Direct capture (pyusb bulk IN)
@@ -679,15 +711,12 @@ def _capture_loop_direct() -> None:
                 chunks_received += 1
                 if chunks_received <= 3:
                     log.info(f"Bulk IN EP{ep:#x} chunk #{chunks_received}: {len(data)} bytes")
-                broadcast_sync({
-                    "type": "usb_data",
-                    "mode": cfg.mode,
-                    "ts": time.time(),
-                    "rate": rate,
-                    "width": cfg.sample_width,
-                    "samples": len(data) // (2 if sample_16bit else 1),
-                    "b64": base64.b64encode(bytes(data)).decode("ascii"),
-                })
+                broadcast_binary_sync(_build_la_binary_frame(
+                    rate,
+                    cfg.sample_width,
+                    bytes(data),
+                    int(time.time() * 1_000_000),
+                ))
         except usb.core.USBTimeoutError:
             continue
         except usb.core.USBError as e:
@@ -841,15 +870,12 @@ def _capture_loop_sigrok() -> None:
                 chunks_sent += 1
                 if chunks_sent <= 3:
                     log.info(f"sigrok stream chunk #{chunks_sent}: {len(chunk_bytes)} bytes")
-                broadcast_sync({
-                    "type": "usb_data",
-                    "mode": cfg.mode,
-                    "ts": time.time(),
-                    "rate": cfg.sample_rate_hz,
-                    "width": cfg.sample_width,
-                    "samples": len(chunk_bytes) // bps,
-                    "b64": base64.b64encode(chunk_bytes).decode("ascii"),
-                })
+                broadcast_binary_sync(_build_la_binary_frame(
+                    cfg.sample_rate_hz,
+                    cfg.sample_width,
+                    chunk_bytes,
+                    int(time.time() * 1_000_000),
+                ))
             elif read_done.is_set():
                 break
             else:
@@ -981,7 +1007,7 @@ async def handle_usb_connect(ws: WebSocketServerProtocol, req: dict) -> dict:
         state.config.sigrok_driver = entry.get("sigrok_driver", "fx2lafw")
         state.config.mode = entry["mode"]
         log.info(f"Connected (sigrok mode): {entry['name']} bus={bus} addr={addr}")
-        return {"type": "usb_connected", "device": entry["name"], "mode": entry["mode"]}
+        return {"type": "usb_connected", "device": entry["name"], "mode": entry["mode"], "binary_la": True}
 
     # Direct pyusb path
     dev = usb.core.find(idVendor=vid, idProduct=pid)
@@ -1027,7 +1053,7 @@ async def handle_usb_connect(ws: WebSocketServerProtocol, req: dict) -> dict:
     state.config.sigrok_driver = ""
     state.config.mode = entry["mode"]
     log.info(f"Connected (direct mode): {entry['name']}")
-    return {"type": "usb_connected", "device": entry["name"], "mode": entry["mode"]}
+    return {"type": "usb_connected", "device": entry["name"], "mode": entry["mode"], "binary_la": True}
 
 
 async def handle_usb_disconnect(_ws: WebSocketServerProtocol, _req: dict) -> dict:

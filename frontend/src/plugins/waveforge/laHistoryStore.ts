@@ -37,6 +37,10 @@ export interface LaCaptureMeta {
   chunkSize: number;
   chunkCount: number;
   bps: number; // bytes per sample
+  // Time Machine retention (PR A4)
+  retentionBytes?: number; // max stored bytes for this capture; undefined = unlimited
+  trimmedBeforeSample?: number; // samples before this index were evicted
+  storedBytes?: number; // approximate encoded bytes currently persisted
 }
 
 function promisify<T>(req: IDBRequest<T>): Promise<T> {
@@ -136,6 +140,17 @@ export class LaHistoryStore {
     return result ?? null;
   }
 
+  /** Retrieve all chunk records for a capture, sorted by chunkIdx. */
+  async getChunkRecordsForCapture(captureId: string): Promise<LaChunkRecord[]> {
+    const db = this._db();
+    const tx = db.transaction([CHUNK_STORE], "readonly");
+    const store = tx.objectStore(CHUNK_STORE);
+    const idx = store.index("byCapture");
+    const range = IDBKeyRange.only(captureId);
+    const records = await promisify<LaChunkRecord[]>(idx.getAll(range));
+    return records.sort((a, b) => a.chunkIdx - b.chunkIdx);
+  }
+
   /** Retrieve multiple chunk records in a single transaction (caller must decompress). */
   async getChunkRecords(captureId: string, chunkIdxs: number[]): Promise<LaChunkRecord[]> {
     if (chunkIdxs.length === 0) return [];
@@ -189,6 +204,22 @@ export class LaHistoryStore {
     return result.sort((a, b) => b.importedAt.localeCompare(a.importedAt));
   }
 
+  /** Delete a list of chunk records for a capture. */
+  async deleteChunks(captureId: string, chunkIdxs: number[]): Promise<void> {
+    if (chunkIdxs.length === 0) return;
+    const db = this._db();
+    const tx = db.transaction([CHUNK_STORE], "readwrite");
+    const store = tx.objectStore(CHUNK_STORE);
+    for (const idx of chunkIdxs) {
+      store.delete([captureId, idx]);
+    }
+    return new Promise((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(new Error("Transaction aborted"));
+    });
+  }
+
   /** Delete a capture and all its chunks. */
   async deleteCapture(captureId: string): Promise<void> {
     const db = this._db();
@@ -197,15 +228,20 @@ export class LaHistoryStore {
     const chunkStore = tx.objectStore(CHUNK_STORE);
     const idx = chunkStore.index("byCapture");
 
-    // Delete all chunks for this capture
+    // Delete all chunks for this capture in a single transaction
     const range = IDBKeyRange.only(captureId);
     const keysReq = idx.getAllKeys(range);
     const keys = (await promisify<IDBValidKey[]>(keysReq)) as Array<[string, number]>;
     for (const key of keys) {
-      await promisifyVoid(chunkStore.delete(key));
+      chunkStore.delete(key);
     }
+    metaStore.delete(captureId);
 
-    await promisifyVoid(metaStore.delete(captureId));
+    return new Promise((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(new Error("Transaction aborted"));
+    });
   }
 
   /** Delete the entire database (nuclear option for testing / user clear). */

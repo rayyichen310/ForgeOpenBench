@@ -9,7 +9,21 @@ const RECONNECT_BASE_MS = 500;
 const RECONNECT_MAX_MS  = 2_000;
 const CONNECT_WAIT_MS   = 15_000;
 
-export class UsbTransport {
+export interface IUsbTransport {
+  configure(cfg: UsbConfig): Promise<void>;
+  start(): Promise<void>;
+  stop(): Promise<void>;
+  onData(handler: UsbDataHandler): () => void;
+  onStopped(handler: () => void): () => void;
+  /** Actual sample rate the transport will use (may differ from configured rate). */
+  readonly effectiveSampleRate?: number;
+  /** Actual sample width the transport will use (may differ from configured width). */
+  readonly effectiveWidth?: 8 | 16;
+  /** Channel labels the transport provides (e.g. for mock pattern decoder auto-detect). */
+  readonly effectiveChannelLabels?: string[];
+}
+
+export class UsbTransport implements IUsbTransport {
   private ws: WebSocket | null = null;
   private listeners = new Set<UsbConnectionListener>();
   private dataHandlers = new Set<UsbDataHandler>();
@@ -21,9 +35,11 @@ export class UsbTransport {
   private _reconnectDelay = RECONNECT_BASE_MS;
   private _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private _deviceInfo: UsbDeviceInfo | null = null;
+  private _binaryLa = false;
 
   get isConnected(): boolean { return this._connected; }
   get deviceInfo(): UsbDeviceInfo | null { return this._deviceInfo; }
+  get supportsBinaryLa(): boolean { return this._binaryLa; }
   get wasIntentionalDisconnect(): boolean { return this._intentionalDisconnect; }
 
   connect(): void {
@@ -69,6 +85,7 @@ export class UsbTransport {
         this._handleBinary(ev.data);
       }
     };
+    this._binaryLa = false;
 
     this.ws.onclose = () => {
       const wasConnected = this._connected;
@@ -142,6 +159,15 @@ export class UsbTransport {
     const rate = view.getUint32(4, true);
     const nBytes = view.getUint32(8, true);
     const data = new Uint8Array(buf, 24, Math.min(nBytes, buf.byteLength - 24));
+    const reserved = view.getUint32(20, true);
+
+    // For LA frames the bridge stores sample width (8|16) in reserved[0].
+    // DSO frames come from the Rust capture path and keep width=8.
+    const isLa = this._deviceInfo?.mode === "la";
+    const bps = isLa ? ((reserved & 0xFF) === 16 ? 2 : 1) : 1;
+    const width: 8 | 16 = isLa ? (((reserved & 0xFF) === 16 ? 16 : 8)) : 8;
+    const mode: "la" | "dso" = isLa ? "la" : "dso";
+
     // Log inter-frame interval (browser wall time) to detect stalls
     const nowUs = performance.now() * 1000;
     const intervalUs = this._lastFrameUs ? nowUs - this._lastFrameUs : 0;
@@ -164,11 +190,11 @@ export class UsbTransport {
     }
 
     const chunk: UsbDataChunk = {
-      mode: "dso",
+      mode,
       ts: performance.now() / 1000,
       rate,
-      width: 8,
-      samples: nBytes, // raw byte count (interleaved CH1/CH2)
+      width,
+      samples: Math.floor(nBytes / bps),
       b64: "", // not used in binary mode
       data,
     };
@@ -211,8 +237,9 @@ export class UsbTransport {
     const params: Record<string, unknown> = { vid: device.vid, pid: device.pid };
     if (device.bus !== undefined)     params.bus     = device.bus;
     if (device.address !== undefined) params.address = device.address;
-    const r = await this._rpc("usb_connect", params, 20_000) as { device: string; mode: string };
+    const r = await this._rpc("usb_connect", params, 20_000) as { device: string; mode: string; binary_la?: boolean };
     this._deviceInfo = { ...device, name: r.device, mode: r.mode as "la" | "dso" };
+    this._binaryLa = r.binary_la === true;
     return r.device;
   }
 

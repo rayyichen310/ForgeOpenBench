@@ -9,9 +9,10 @@
  * All APIs are async. Consumers (WaveformLaView, decoders) await windows.
  */
 
-import { LaHistoryStore, type LaCaptureMeta, type LaChunkRecord } from "./laHistoryStore";
+import { LaHistoryStore, type LaCaptureMeta } from "./laHistoryStore";
 import type { LaCapture } from "./laDecoders";
 import { rleEncode, rleDecode, type RleFormat } from "./laRle";
+import { LaStreamWriter, type LaChunkSink } from "./laStreamWriter";
 
 const DEFAULT_CHUNK_SIZE = 1_000_000; // samples per chunk
 const DEFAULT_MAX_CACHE = 20; // max chunks kept in hot cache
@@ -29,6 +30,7 @@ export class LaHistoryBuffer {
   private accessCounter = 0;
   private maxCache: number;
   private chunkSize: number;
+  private writers = new Map<string, Promise<LaStreamWriter>>();
 
   constructor(options?: { maxCache?: number; chunkSize?: number }) {
     this.maxCache = options?.maxCache ?? DEFAULT_MAX_CACHE;
@@ -40,6 +42,7 @@ export class LaHistoryBuffer {
   }
 
   async close(): Promise<void> {
+    this.writers.clear();
     this.cache.clear();
     await this.store.close();
   }
@@ -61,6 +64,7 @@ export class LaHistoryBuffer {
     });
 
     const records = [];
+    let storedBytes = 0;
     for (let i = 0; i < chunkCount; i++) {
       const startSample = i * this.chunkSize;
       const endSample = Math.min((i + 1) * this.chunkSize, totalSamples);
@@ -69,6 +73,7 @@ export class LaHistoryBuffer {
       const chunkData = capture.samples.subarray(byteStart, byteEnd);
       // Store a copy — subarray is a view and may be invalidated
       const encoded = rleEncode(new Uint8Array(chunkData), bps as 1 | 2);
+      storedBytes += encoded.data.length;
       records.push({
         captureId,
         chunkIdx: i,
@@ -92,6 +97,7 @@ export class LaHistoryBuffer {
       chunkSize: this.chunkSize,
       chunkCount,
       bps,
+      storedBytes,
     });
 
     return captureId;
@@ -110,13 +116,17 @@ export class LaHistoryBuffer {
   ): Promise<Uint8Array> {
     const meta = await this.store.getMeta(captureId);
     if (!meta) throw new Error(`Capture ${captureId} not found`);
+    const writer = await this._activeWriter(captureId);
 
     const bps = meta.bps;
-    const totalSamples = meta.totalSamples;
+    const totalSamples = writer ? Math.max(meta.totalSamples, writer.totalSamples) : meta.totalSamples;
+    const trimmedBefore = meta.trimmedBeforeSample ?? 0;
 
     const padSamples = paddingFactor > 0 ? Math.floor(sampleCount * paddingFactor) : 0;
-    const paddedStart = Math.max(0, startSample - padSamples);
-    const paddedEnd = Math.min(startSample + sampleCount + padSamples, totalSamples);
+    const rawStart = Math.max(0, startSample - padSamples);
+    const rawEnd = Math.min(startSample + sampleCount + padSamples, totalSamples);
+    const paddedStart = Math.max(rawStart, trimmedBefore);
+    const paddedEnd = Math.max(rawEnd, trimmedBefore);
 
     if (paddedStart >= paddedEnd || paddedStart < 0) {
       return new Uint8Array(0);
@@ -149,7 +159,10 @@ export class LaHistoryBuffer {
     for (let chunkIdx = firstChunk; chunkIdx <= lastChunk; chunkIdx++) {
       const chunkStartSample = chunkIdx * meta.chunkSize;
       const chunkEndSample = Math.min((chunkIdx + 1) * meta.chunkSize, totalSamples);
-      const chunk = await this._getChunk(captureId, chunkIdx, meta);
+      // The staged tail of an active stream is served as a virtual last chunk.
+      const chunk = writer && chunkIdx === writer.chunkCount && writer.stagedSamples > 0
+        ? writer.stagedTail()
+        : await this._getChunk(captureId, chunkIdx, meta);
       if (!chunk) continue;
 
       const overlapStart = Math.max(paddedStart, chunkStartSample);
@@ -169,9 +182,17 @@ export class LaHistoryBuffer {
     return this.getWindow(captureId, 0, maxSamples);
   }
 
-  /** Get capture metadata. */
+  /** Get capture metadata. Includes staged (not yet persisted) samples of an active stream. */
   async getMeta(captureId: string): Promise<LaCaptureMeta | null> {
-    return this.store.getMeta(captureId);
+    const meta = await this.store.getMeta(captureId);
+    if (!meta) return null;
+    const writer = await this._activeWriter(captureId);
+    if (!writer) return meta;
+    return {
+      ...meta,
+      totalSamples: Math.max(meta.totalSamples, writer.totalSamples),
+      chunkCount: Math.max(meta.chunkCount, writer.chunkCount + (writer.stagedSamples > 0 ? 1 : 0)),
+    };
   }
 
   /** List all captures, newest first. */
@@ -181,12 +202,14 @@ export class LaHistoryBuffer {
 
   /** Delete a capture and evict its chunks from hot cache. */
   async deleteCapture(captureId: string): Promise<void> {
+    this.writers.delete(captureId);
     this._evictCaptureFromCache(captureId);
     await this.store.deleteCapture(captureId);
   }
 
   /** Clear all history. */
   async clearAll(): Promise<void> {
+    this.writers.clear();
     this.cache.clear();
     await this.store.deleteDatabase();
     await this.store.init();
@@ -200,101 +223,154 @@ export class LaHistoryBuffer {
   }
 
   /**
-   * Append raw sample bytes to an existing capture. Data is split into chunks and
-   * persisted incrementally so the capture becomes viewable before the full stream
-   * is complete. Last chunk is read, extended, and rewritten to keep chunk boundaries
-   * aligned with the configured chunkSize.
+   * Append raw sample bytes to an existing capture via its stream writer.
+   * Whole chunks are persisted as staging fills; the staged tail stays readable
+   * through getWindow/getMeta before it is flushed by finalizeCapture.
    */
   async appendChunk(captureId: string, data: Uint8Array): Promise<void> {
-    const meta = await this.store.getMeta(captureId);
-    if (!meta) throw new Error(`Capture ${captureId} not found`);
-
-    const bps = meta.bps;
-    const chunkSize = meta.chunkSize;
-    const totalSamples = meta.totalSamples;
-
     if (data.length === 0) return;
-
-    let records: LaChunkRecord[] = [];
-    let nextSample = totalSamples;
-    let chunkIdx = meta.chunkCount;
-    let remaining = data;
-
-    // Extend the last existing chunk if it is partial
-    if (meta.chunkCount > 0) {
-      const lastChunkIdx = meta.chunkCount - 1;
-      const lastChunk = await this._getChunk(captureId, lastChunkIdx, meta);
-      if (lastChunk) {
-        const samplesInLast = Math.floor(lastChunk.length / bps);
-        const room = chunkSize - samplesInLast;
-        if (room > 0) {
-          const takeBytes = Math.min(remaining.length, room * bps);
-          const combined = new Uint8Array(lastChunk.length + takeBytes);
-          combined.set(lastChunk);
-          combined.set(remaining.subarray(0, takeBytes), lastChunk.length);
-          const encoded = rleEncode(combined, bps as 1 | 2);
-          records.push({
-            captureId,
-            chunkIdx: lastChunkIdx,
-            startSample: lastChunkIdx * chunkSize,
-            endSample: lastChunkIdx * chunkSize + Math.floor(combined.length / bps),
-            data: encoded.data,
-            format: encoded.format,
-          });
-          nextSample += Math.floor(takeBytes / bps);
-          chunkIdx = meta.chunkCount;
-          remaining = remaining.subarray(takeBytes);
-        }
-      }
-    }
-
-    // Add remaining data as full or partial new chunks
-    let offset = 0;
-    while (offset < remaining.length) {
-      const remainingBytes = remaining.length - offset;
-      const chunkBytes = Math.min(remainingBytes, chunkSize * bps);
-      const chunkData = remaining.subarray(offset, offset + chunkBytes);
-      const encoded = rleEncode(new Uint8Array(chunkData), bps as 1 | 2);
-      records.push({
-        captureId,
-        chunkIdx,
-        startSample: nextSample,
-        endSample: nextSample + Math.floor(chunkData.length / bps),
-        data: encoded.data,
-        format: encoded.format,
-      });
-      offset += chunkBytes;
-      nextSample += Math.floor(chunkBytes / bps);
-      chunkIdx++;
-    }
-
-    await this.store.putChunks(records);
-
-    const addedSamples = Math.floor(data.length / bps);
-    const newTotalSamples = totalSamples + addedSamples;
-    const newChunkCount = records.length > 0 ? records[records.length - 1].chunkIdx + 1 : meta.chunkCount;
-
-    await this.store.updateMeta({
-      ...meta,
-      totalSamples: newTotalSamples,
-      chunkCount: newChunkCount,
-    });
-
-    // Update hot cache
-    for (const r of records) {
-      const key = `${captureId}:${r.chunkIdx}`;
-      this._putInCache(key, r.data);
-    }
+    const writer = await this.getStreamWriter(captureId);
+    await writer.write(data);
   }
 
-  /** Finalize a streaming capture and return the updated metadata. */
+  /**
+   * Get (or create) the stream writer for a capture. Exposed so live capture
+   * can register an onChunkFlushed hook (e.g., pyramid tile generation).
+   */
+  async getStreamWriter(captureId: string): Promise<LaStreamWriter> {
+    let pending = this.writers.get(captureId);
+    if (!pending) {
+      pending = this._createWriter(captureId);
+      this.writers.set(captureId, pending);
+      pending.catch(() => this.writers.delete(captureId));
+    }
+    return pending;
+  }
+
+  /** Finalize a streaming capture: flush the staged tail and return the metadata. */
   async finalizeCapture(captureId: string): Promise<LaCaptureMeta> {
+    const pending = this.writers.get(captureId);
+    if (pending) {
+      const writer = await pending;
+      await writer.flush();
+      this.writers.delete(captureId);
+    }
     const meta = await this.store.getMeta(captureId);
     if (!meta) throw new Error(`Capture ${captureId} not found`);
     return meta;
   }
 
   // ── internal ──
+
+  /** Enforce retention budget by deleting oldest chunks until storedBytes <= budget. */
+  private async _enforceRetention(
+    captureId: string,
+    liveMeta: { storedBytes: number; totalSamples: number; chunkCount: number; trimmedBeforeSample: number; retentionBytes?: number; chunkSize: number }
+  ): Promise<void> {
+    const budget = liveMeta.retentionBytes;
+    if (!budget || budget <= 0) return;
+    if (liveMeta.storedBytes <= budget) return;
+
+    const records = await this.store.getChunkRecordsForCapture(captureId);
+    records.sort((a, b) => a.chunkIdx - b.chunkIdx);
+
+    let storedBytes = liveMeta.storedBytes;
+    const toDelete: number[] = [];
+    let lastDeletedIdx = -1;
+    for (const record of records) {
+      if (storedBytes <= budget) break;
+      toDelete.push(record.chunkIdx);
+      storedBytes -= record.data.length;
+      lastDeletedIdx = record.chunkIdx;
+    }
+    if (toDelete.length === 0) return;
+
+    await this.store.deleteChunks(captureId, toDelete);
+    for (const idx of toDelete) {
+      this.cache.delete(`${captureId}:${idx}`);
+    }
+    const chunkSize = liveMeta.chunkSize;
+    const trimmedBeforeSample = Math.min(
+      (lastDeletedIdx + 1) * chunkSize,
+      liveMeta.totalSamples
+    );
+    liveMeta.storedBytes = storedBytes;
+    liveMeta.trimmedBeforeSample = Math.max(liveMeta.trimmedBeforeSample, trimmedBeforeSample);
+    const base = await this.store.getMeta(captureId);
+    if (base) {
+      await this.store.updateMeta({
+        ...base,
+        storedBytes,
+        trimmedBeforeSample: liveMeta.trimmedBeforeSample,
+      });
+    }
+  }
+
+  private async _activeWriter(captureId: string): Promise<LaStreamWriter | null> {
+    const pending = this.writers.get(captureId);
+    return pending ? pending : null;
+  }
+
+  private async _createWriter(captureId: string): Promise<LaStreamWriter> {
+    const meta = await this.store.getMeta(captureId);
+    if (!meta) throw new Error(`Capture ${captureId} not found`);
+    const bps = meta.bps;
+
+    // Track mutable state in closure to avoid redundant IDB reads on every flush.
+    const liveMeta = {
+      storedBytes: meta.storedBytes ?? 0,
+      totalSamples: meta.totalSamples,
+      chunkCount: meta.chunkCount,
+      trimmedBeforeSample: meta.trimmedBeforeSample ?? 0,
+      retentionBytes: meta.retentionBytes,
+      chunkSize: meta.chunkSize,
+    };
+
+    const sink: LaChunkSink = {
+      flushChunk: async (chunkIdx, raw, startSample) => {
+        const samples = Math.floor(raw.length / bps);
+        const encoded = rleEncode(raw, bps as 1 | 2);
+        await this.store.putChunks([{
+          captureId,
+          chunkIdx,
+          startSample,
+          endSample: startSample + samples,
+          data: encoded.data,
+          format: encoded.format,
+        }]);
+        liveMeta.storedBytes += encoded.data.length;
+        liveMeta.totalSamples = Math.max(liveMeta.totalSamples, startSample + samples);
+        liveMeta.chunkCount = Math.max(liveMeta.chunkCount, chunkIdx + 1);
+        await this.store.updateMeta({
+          ...meta,
+          totalSamples: liveMeta.totalSamples,
+          chunkCount: liveMeta.chunkCount,
+          storedBytes: liveMeta.storedBytes,
+          trimmedBeforeSample: liveMeta.trimmedBeforeSample,
+        });
+        // Cache the decoded raw bytes — consumers expect decoded samples.
+        this._putInCache(`${captureId}:${chunkIdx}`, raw);
+        await this._enforceRetention(captureId, liveMeta);
+      },
+    };
+
+    // Resume-append: if the last persisted chunk is partial, load it into staging
+    // so it is extended in place and chunk boundaries stay aligned to chunkSize.
+    let start = { chunkCount: meta.chunkCount, totalSamples: meta.totalSamples };
+    let backfill: Uint8Array | null = null;
+    if (meta.chunkCount > 0) {
+      const lastIdx = meta.chunkCount - 1;
+      const lastChunk = await this._getChunk(captureId, lastIdx, meta);
+      if (lastChunk && Math.floor(lastChunk.length / bps) < meta.chunkSize) {
+        start = { chunkCount: lastIdx, totalSamples: lastIdx * meta.chunkSize };
+        backfill = lastChunk;
+      }
+    }
+
+    const writer = new LaStreamWriter(sink, bps, meta.chunkSize, start);
+    if (backfill) writer.backfill(backfill);
+    return writer;
+  }
 
   private async _getChunk(
     captureId: string,

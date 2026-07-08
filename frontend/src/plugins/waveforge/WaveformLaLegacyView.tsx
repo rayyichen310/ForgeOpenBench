@@ -1,5 +1,5 @@
 import { useRef, useEffect, useCallback, useState, useMemo } from "react";
-import type { UsbTransport } from "./UsbTransport";
+import type { IUsbTransport } from "./UsbTransport";
 import type { UsbDataChunk } from "./usbTypes";
 import { RingBuffer } from "./RingBuffer";
 import { globalBus } from "../../core/global_bus";
@@ -14,7 +14,7 @@ interface Cursor { sample: number; dragging: boolean; }
 
 
 interface Props {
-  transport: UsbTransport;
+  transport: IUsbTransport;
   isActive: boolean;
   connected: boolean;
   capture?: LaCapture | null;

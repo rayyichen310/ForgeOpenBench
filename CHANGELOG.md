@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.9.1-rc27] — 2026-07-07
+
+### Added
+- **WaveForge LA — live capture DVR (Time Machine wired to USB transport)**
+  - `WaveformLaView` Run/Single/Stop now drive the USB transport and stream LA data into `LaHistoryBuffer` via `appendChunk`.
+  - Live viewport follows the capture tail while running; Stop loads the full capture from IDB and zooms to fit.
+  - Single mode triggers on the configured edge using `handleLaAcquireMode` and stops after trigger or timeout.
+  - Retention ring / bounded DVR: `LaCaptureMeta` carries `retentionBytes` (default 512 MB), `storedBytes`, and `trimmedBeforeSample`; `LaHistoryBuffer` evicts oldest chunks after each flush.
+  - Acquire panel in `WaveformLaView` to set the retention budget and show used bytes plus oldest-retained timestamp.
+- **WaveForge LA — Simulate button (software-only live smoke test)**
+  - `MockUsbTransport` emits synthetic UART+I2C+SPI protocol data at 8-bit/1MHz, matching the Pattern button.
+  - Exposes `effectiveSampleRate`, `effectiveWidth`, and `effectiveChannelLabels` on `IUsbTransport` for transport-aware capture setup.
+  - Simulate streams the single ~700-sample burst in 50-sample chunks, then hits EOF — capture length matches data, not 1 second of padding.
+- **WaveForge LA — incremental live overview bar**
+  - Downsampled overview renders during live capture, updating every 200ms with the latest tail data.
+  - Pre-allocated ring buffers for overview and tail (zero allocations after init) prevent OOM from copy-and-grow patterns.
+  - Rolling tail buffer (2M samples) serves window-load fast path without IndexedDB reads.
+
+### Fixed
+- **WaveForge LA — Simulate correctness**
+  - Fixed 10-second duration → 1s → now matches actual pattern length (~0.7ms).
+  - Fixed 8/16-bit data width mismatch between MockUsbTransport and capture config.
+  - Fixed missing timeline overview after stop — `handleStop` now loads full capture into `fullCaptureRef`.
+  - Fixed OOM from copy-and-grow buffers — pre-allocated ring buffers with in-place writes and `copyWithin` for overflow.
+  - Fixed decoders not working during simulation — Pattern-compatible channel labels now passed from transport.
+  - Fixed `liveTotalSamplesRef` updated inside async IDB promise causing UI lag — now synchronous.
+- **WaveForge LA — decoder auto-detect improvements**
+  - `inferDecoderDefaults` now falls back to `autoDetectLaProtocol` when no labels match, enabling signal-based detection on imported sessions without descriptive labels.
+  - CAN frames weighted ×5 in auto-detect scoring (valid CAN frame requires SOF + arbitration + CRC + ACK + EOF).
+  - I2C scoring only counts bytes within complete transactions (start → byte → stop), reducing false positives on non-I2C data.
+  - Added `skipAutoDetect` parameter to `inferDecoderDefaults` to break recursion cycle with `autoDetectLaProtocol`.
+
+### Changed
+- **WaveForge LA — binary streaming (PR A2)**
+  - `usb_server.py` now sends LA data as binary WebSocket frames using the Rust-frame format, with sample width stored in the reserved byte.
+  - `UsbTransport` parses width from binary LA frames and exposes `supportsBinaryLa`; JSON `usb_data` fallback still works.
+- **WaveForge LA — Time Machine write-behind staging**
+  - New `LaStreamWriter` class stages raw bytes in RAM and flushes whole chunks to `LaHistoryStore`, replacing O(n²) read-modify-write.
+  - `LaHistoryBuffer.getMeta` and `getWindow` include unstaged live tail of active stream writer.
+
 ## [0.9.1-rc26] — 2026-07-07
 
 ### Added
@@ -14,6 +54,29 @@
   - LIN: `lin_synthetic_2frames.sr` (synthetic, 1 MS/s, 19200 baud, 2 frames with valid parity/checksum).
   - `fetch-fixtures.sh` updated with all new URLs and LIN generation step.
   - `sigrokFixtures.test.ts` now covers all 9 decoder protocols (150 tests).
+
+### Fixed
+- **WaveForge LA — Time Machine appendChunk cache poisoning**
+  - `LaHistoryBuffer.appendChunk` no longer caches RLE-encoded bytes; the hot cache now stores decoded raw sample bytes so `getWindow` returns byte-identical samples immediately after append.
+
+### Changed
+- **WaveForge LA — Time Machine write-behind staging**
+  - New `LaStreamWriter` class stages raw sample bytes in RAM and flushes whole chunks exactly once to `LaHistoryStore`, replacing the previous O(n²) read-modify-write in `appendChunk`.
+  - `LaHistoryBuffer.getMeta` and `getWindow` now include the unstaged live tail of an active stream writer.
+- **WaveForge LA — binary streaming (PR A2)**
+  - `usb_server.py` now sends LA data (direct pyusb and sigrok) as binary WebSocket frames using the existing Rust-frame format, with sample width (8|16) stored in the reserved byte.
+  - `UsbTransport` parses the width from binary LA frames and exposes `supportsBinaryLa`; old bridges that send JSON `usb_data` still work as a fallback.
+- **WaveForge LA — live-to-history DVR wiring (PR A3)**
+  - `WaveformLaView` Run/Single/Stop now drive the USB transport and stream LA data into `LaHistoryBuffer` via `appendChunk`.
+  - Live viewport follows the capture tail while running; Stop unpins the view and the existing pan/zoom + `getWindow` path serves history.
+  - Single mode triggers on the configured edge using `handleLaAcquireMode` and stops after trigger or timeout.
+- **WaveForge LA — retention ring / bounded DVR (PR A4)**
+  - `LaCaptureMeta` now carries `retentionBytes` (default 512 MB), `storedBytes`, and `trimmedBeforeSample`.
+  - `LaHistoryBuffer` evicts oldest chunks after each flush when `storedBytes > retentionBytes`, keeping absolute indexing and clamping `getWindow` / pan to the retained range.
+  - Added an Acquire panel in `WaveformLaView` to set the retention budget and show used bytes plus oldest-retained timestamp.
+- **WaveForge LA — software-only live smoke test**
+  - Added `MockUsbTransport` and a `Simulate` button in `WaveformLaView` so the live capture + retention path can be exercised without hardware.
+  - Refactored `UsbTransport` public live-capture API into `IUsbTransport` so both real and simulated transports share the same interface.
 
 ### Known Limitations
 - CAN decoder lacks bit destuffing — real captures cannot be fully decoded yet (issue #14).

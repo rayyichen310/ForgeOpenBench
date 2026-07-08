@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useMemo, useEffect } from "react";
-import type { UsbTransport } from "./UsbTransport";
+import type { IUsbTransport } from "./UsbTransport";
+import { MockUsbTransport } from "./MockUsbTransport";
 import { WaveformLaLegacyView } from "./WaveformLaLegacyView";
 import { LaCanvas } from "./LaCanvas";
 import { LaOverview } from "./LaOverview";
@@ -8,8 +9,8 @@ import { ChannelsPanel } from "./ChannelsPanel";
 import { LaDecodersPanel } from "./LaDecodersPanel";
 import { loadChannels, saveChannels } from "./laChannelConfig";
 import type { LaChannel } from "./laChannelConfig";
-import type { LaAcquireMode } from "./laAcquireModes";
-import type { LaTriggerConfig } from "./laAcquireModes";
+import type { LaAcquireMode, LaAcquireResult, LaTriggerConfig } from "./laAcquireModes";
+import { handleLaAcquireMode } from "./laAcquireModes";
 import type { LaCapture, DecoderDefaults } from "./laDecoders";
 import { inferDecoderDefaults, generateLaTestPattern, decodeUartChunk, decodeI2C, decodeSPI, decodeCAN, decodeOneWire, decodeSWD, decodeJTAG, decodeModbus, decodeLIN, findNearestUartFrame, findNearestI2CFrame, findNearestSpiFrame, findNearestCanFrame, findNearestOneWireFrame, findNearestSwdFrame, findNearestJtagFrame, findNearestModbusFrame, findNearestLinFrame } from "./laDecoders";
 import { parseLaCsv, parseLaJson, detectLaFormat, streamSigrokSr } from "./laImport";
@@ -17,7 +18,7 @@ import { downloadLaCapture } from "./laExport";
 import { LaHistoryBuffer, type LaCaptureMeta } from "./LaHistoryBuffer";
 
 interface Props {
-  transport: UsbTransport;
+  transport: IUsbTransport;
   isActive: boolean;
   connected: boolean;
 }
@@ -84,6 +85,8 @@ function applyChannelVisibility(
 export function WaveformLaView(props: Props) {
   const [channels, setChannels] = useState<LaChannel[]>(loadChannels);
   const [sampleRate, setSampleRate] = useState(12_000_000);
+  const width: 8 | 16 = 16; // future: width selector
+  const [retentionBytes, setRetentionBytes] = useState(512 * 1024 * 1024); // 512 MB default
   const [acquireMode, setAcquireMode] = useState<LaAcquireMode>("stopped");
   const [showCursors, setShowCursors] = useState(false);
   const [cursorA, setCursorA] = useState<Cursor>({ sample: 0, dragging: false });
@@ -109,6 +112,27 @@ export function WaveformLaView(props: Props) {
   const [windowedCapture, setWindowedCapture] = useState<LaCapture | null>(null);
   const [probeCapture, setProbeCapture] = useState<LaCapture | null>(null);
 
+  // Live capture bookkeeping
+  const activeTransportRef = useRef<IUsbTransport>(props.transport);
+  const simTransportRef = useRef<IUsbTransport>(new MockUsbTransport());
+  const liveCaptureIdRef = useRef<string | null>(null);
+  const dataOffRef = useRef<(() => void) | null>(null);
+  const stoppedOffRef = useRef<(() => void) | null>(null);
+  const lastWriteRef = useRef<Promise<void>>(Promise.resolve());
+  const liveTotalSamplesRef = useRef(0);
+  const singleArmedAtRef = useRef(0);
+  const followTailRef = useRef(false);
+  const acquireModeRef = useRef<LaAcquireMode>(acquireMode);
+  const liveOverviewRef = useRef<Uint8Array | null>(null);
+  const liveOverviewStrideRef = useRef(1);
+  const liveOverviewWriteRef = useRef(0);
+  const liveTailRef = useRef<Uint8Array | null>(null);
+  const liveTailStartRef = useRef(0);
+  const liveTailWriteRef = useRef(0);
+  const liveTailMaxSamplesRef = useRef(2_000_000);
+  const [, setLiveOverviewTick] = useState(0);
+  useEffect(() => { acquireModeRef.current = acquireMode; }, [acquireMode]);
+
   const IN_MEMORY_THRESHOLD = 50 * 1024 * 1024; // 50 MB — slice synchronously, skip IndexedDB on pan/zoom
   const PADDING_FACTOR = 1.0; // 1× zoomSamples extra on each side for scroll buffer
 
@@ -124,10 +148,33 @@ export function WaveformLaView(props: Props) {
       paddedBufferRef.current = null;
       return;
     }
-    const total = captureMeta.totalSamples;
+    const total = Math.max(captureMeta.totalSamples, liveTotalSamplesRef.current);
     const zoom = zoomSamples ?? total;
     const pan = Math.max(0, Math.min(panSample, Math.max(total - zoom, 0)));
     const bps = captureMeta.width === 16 ? 2 : 1;
+
+    // Fast path 0: live capture — slice from in-memory rolling tail buffer.
+    const tail = liveTailRef.current;
+    if (isRunning && tail && tail.length > 0) {
+      const tailStart = liveTailStartRef.current;
+      const validBytes = liveTailWriteRef.current;
+      const tailSamples = validBytes / bps;
+      const tailEnd = tailStart + tailSamples;
+      if (pan + zoom <= tailEnd && pan >= tailStart) {
+        const startByte = Math.round((pan - tailStart) * bps);
+        const endByte = Math.min(startByte + Math.round(zoom * bps), validBytes);
+        setWindowedCapture({
+          sampleRate: captureMeta.sampleRate,
+          width: captureMeta.width,
+          samples: tail.subarray(startByte, endByte),
+          source: captureMeta.source,
+          importedAt: captureMeta.importedAt,
+          channelLabels: captureMeta.channelLabels,
+        });
+        return;
+      }
+    }
+
     // Fast path 1: small captures stay in memory, slice synchronously
     const full = fullCaptureRef.current;
     if (full && full.samples.length <= IN_MEMORY_THRESHOLD) {
@@ -182,13 +229,20 @@ export function WaveformLaView(props: Props) {
         importedAt: captureMeta.importedAt,
         channelLabels: captureMeta.channelLabels,
       });
+    }).catch((e) => {
+      if (cancelled) return;
+      console.error("[WaveformLaView] getWindow failed", e);
+      setWindowedCapture(null);
+      paddedBufferRef.current = null;
     });
     return () => { cancelled = true; };
   }, [activeCaptureId, captureMeta, panSample, zoomSamples]);
 
-  // Load probe for auto-detect whenever capture changes
+  // Load probe for auto-detect whenever capture changes (skipped during live capture)
+  const liveActive = acquireMode === "running" || acquireMode === "single-armed";
   useEffect(() => {
-    if (!activeCaptureId || !captureMeta) {
+    if (!activeCaptureId || !captureMeta || liveActive) {
+      if (liveActive) return; // keep existing probe during live capture
       setProbeCapture(null);
       return;
     }
@@ -203,9 +257,13 @@ export function WaveformLaView(props: Props) {
         importedAt: captureMeta.importedAt,
         channelLabels: captureMeta.channelLabels,
       });
+    }).catch((e) => {
+      if (cancelled) return;
+      console.error("[WaveformLaView] getProbe failed", e);
+      setProbeCapture(null);
     });
     return () => { cancelled = true; };
-  }, [activeCaptureId, captureMeta]);
+  }, [activeCaptureId, captureMeta, liveActive]);
 
   const decoderDefaults = useMemo<DecoderDefaults>(() => {
     const probe = probeCapture ?? {
@@ -316,9 +374,242 @@ export function WaveformLaView(props: Props) {
   const [useLegacy, setUseLegacy] = useState(false);
 
   const isRunning = acquireMode === "running" || acquireMode === "single-armed";
-  const handleRun = useCallback(() => setAcquireMode("running"), []);
-  const handleStop = useCallback(() => setAcquireMode("stopped"), []);
-  const handleSingle = useCallback(() => setAcquireMode("single-armed"), []);
+
+  const handleStop = useCallback(async () => {
+    dataOffRef.current?.();
+    dataOffRef.current = null;
+    stoppedOffRef.current?.();
+    stoppedOffRef.current = null;
+    followTailRef.current = false;
+    const id = liveCaptureIdRef.current;
+    if (id) {
+      try { await activeTransportRef.current.stop(); } catch { /* already stopped */ }
+      await lastWriteRef.current.catch(() => {});
+      try { await historyRef.current.finalizeCapture(id); } catch (e) { console.error("[WaveformLaView] finalize failed", e); }
+      const meta = await historyRef.current.getMeta(id);
+      if (meta) setCaptureMeta(meta);
+      // Load full capture into memory so overview timeline renders after stop.
+      if (meta && meta.totalSamples <= 2_000_000) {
+        const fullSamples = await historyRef.current.getWindow(id, 0, meta.totalSamples);
+        fullCaptureRef.current = {
+          sampleRate: meta.sampleRate,
+          width: meta.width,
+          samples: fullSamples,
+          source: meta.source,
+          importedAt: meta.importedAt,
+          channelLabels: meta.channelLabels,
+        };
+      }
+      liveCaptureIdRef.current = null;
+      liveTailRef.current = null;
+      liveTailStartRef.current = 0;
+      liveTailWriteRef.current = 0;
+      liveOverviewWriteRef.current = 0;
+      // Zoom to full capture so user sees the whole pattern.
+      setZoomSamples(null);
+      setPanSample(0);
+    }
+    setAcquireMode("stopped");
+  }, []);
+
+  const startLiveCapture = useCallback(async (mode: "running" | "single-armed", transport: IUsbTransport = props.transport) => {
+    if (isRunning) return;
+    await handleStop();
+    activeTransportRef.current = transport;
+    setAcquireMode(mode);
+    followTailRef.current = true;
+    liveTotalSamplesRef.current = 0;
+    singleArmedAtRef.current = 0;
+    lastWriteRef.current = Promise.resolve();
+    liveOverviewRef.current = null;
+    liveOverviewWriteRef.current = 0;
+    liveTailRef.current = null;
+    liveTailStartRef.current = 0;
+    liveTailWriteRef.current = 0;
+    try {
+      await transport.configure({ mode: "la", sample_rate_hz: sampleRate, sample_width: width });
+      const effectiveRate = transport.effectiveSampleRate ?? sampleRate;
+      const effectiveWidth = transport.effectiveWidth ?? width;
+      const effectiveBps = effectiveWidth === 16 ? 2 : 1;
+      const effectiveLabels = transport.effectiveChannelLabels ?? channels.map(c => c.label);
+      const id = await historyRef.current.createCapture({
+        sampleRate: effectiveRate,
+        width: effectiveWidth,
+        source: "live",
+        importedAt: new Date().toISOString(),
+        channelLabels: effectiveLabels,
+        chunkSize: 100_000,
+        bps: effectiveBps,
+        retentionBytes,
+      });
+      liveCaptureIdRef.current = id;
+      setActiveCaptureId(id);
+      // Clear stale view and zoom to show the full pattern (like Pattern button).
+      fullCaptureRef.current = null;
+      paddedBufferRef.current = null;
+      setWindowedCapture(null);
+      setZoomSamples(null); // show full capture — will be clamped to totalSamples
+      setPanSample(0);
+      liveOverviewStrideRef.current = 1; // no downsampling for short captures
+      // Pre-allocate overview buffer: totalSamples * bps (sized conservatively)
+      const overviewTotalBytes = Math.max(2000, effectiveRate * effectiveBps); // generous upper bound
+      liveOverviewRef.current = new Uint8Array(overviewTotalBytes);
+      liveOverviewWriteRef.current = 0;
+      // Pre-allocate tail buffer at max size
+      liveTailMaxSamplesRef.current = 2_000_000;
+      liveTailRef.current = new Uint8Array(liveTailMaxSamplesRef.current * effectiveBps);
+      liveTailWriteRef.current = 0;
+      liveTailStartRef.current = 0;
+      const meta = await historyRef.current.getMeta(id);
+      if (meta) setCaptureMeta(meta);
+      // Apply transport channel labels so UI and decoders match the pattern.
+      if (transport.effectiveChannelLabels) {
+        handleChannelsChange(channels.map(ch => ({
+          ...ch,
+          label: transport.effectiveChannelLabels?.[ch.id] ?? ch.label,
+        })));
+      }
+
+      dataOffRef.current = transport.onData((chunk) => {
+        if (chunk.mode !== "la" || !liveCaptureIdRef.current) return;
+        const bytes = chunk.data?.length
+          ? chunk.data
+          : Uint8Array.from(atob(chunk.b64), c => c.charCodeAt(0));
+        if (bytes.length === 0) return;
+        const chunkSamples = chunk.samples;
+        const captureId = liveCaptureIdRef.current;
+        const isFirstChunk = liveTotalSamplesRef.current === 0;
+
+        // Update total samples synchronously so follow-tail stays responsive
+        // even if IDB writes are slow.
+        liveTotalSamplesRef.current += chunkSamples;
+
+        // Incrementally downsample for the live overview bar (in-place, no alloc).
+        const stride = liveOverviewStrideRef.current;
+        const bpsLocal = effectiveBps;
+        const ovBuf = liveOverviewRef.current;
+        if (ovBuf) {
+          const nOverview = Math.ceil(chunkSamples / stride);
+          for (let i = 0, j = 0; i < chunkSamples && j < nOverview; i += stride, j++) {
+            const srcOff = i * bpsLocal;
+            const dstOff = liveOverviewWriteRef.current + j * bpsLocal;
+            if (dstOff + bpsLocal > ovBuf.length) break;
+            ovBuf[dstOff] = bytes[srcOff] ?? 0;
+            if (bpsLocal === 2) ovBuf[dstOff + 1] = bytes[srcOff + 1] ?? 0;
+          }
+          liveOverviewWriteRef.current = Math.min(
+            liveOverviewWriteRef.current + nOverview * bpsLocal,
+            ovBuf.length
+          );
+        }
+
+        // Write into pre-allocated tail buffer (in-place, no alloc).
+        const tailBuf = liveTailRef.current;
+        if (tailBuf) {
+          const writeBytes = bytes.length;
+          const writeOff = liveTailWriteRef.current;
+          const tailMaxBytes = tailBuf.length;
+          if (writeOff + writeBytes <= tailMaxBytes) {
+            // Fits — write at current offset.
+            tailBuf.set(bytes, writeOff);
+            liveTailWriteRef.current = writeOff + writeBytes;
+          } else {
+            // Overflow — shift left by one chunk and write at end.
+            const shiftBytes = writeBytes;
+            tailBuf.copyWithin(0, shiftBytes, tailMaxBytes);
+            tailBuf.set(bytes, tailMaxBytes - writeBytes);
+            liveTailWriteRef.current = tailMaxBytes;
+            liveTailStartRef.current = liveTotalSamplesRef.current - (tailMaxBytes / bpsLocal);
+          }
+        }
+
+        // Set probe from first chunk data directly — no IDB read needed.
+        if (isFirstChunk) {
+          setProbeCapture({
+            sampleRate: effectiveRate,
+            width: effectiveWidth,
+            samples: bytes,
+            source: "live",
+            importedAt: new Date().toISOString(),
+            channelLabels: effectiveLabels,
+          });
+        }
+
+        lastWriteRef.current = lastWriteRef.current.then(async () => {
+          await historyRef.current.appendChunk(captureId, bytes);
+          if (acquireModeRef.current === "single-armed") {
+            const result: LaAcquireResult = handleLaAcquireMode({
+              mode: "single-armed",
+              samples: bytes,
+              width: effectiveWidth,
+              trigger,
+              totalSamples: liveTotalSamplesRef.current,
+              armedAtSample: singleArmedAtRef.current,
+              timeoutSamples: sampleRate * 5,
+            });
+            if (result.stop) {
+              setAcquireMode(result.mode);
+              await handleStop();
+            }
+          }
+        }).catch(e => console.error("[WaveformLaView] chunk write failed", e));
+      });
+      stoppedOffRef.current = transport.onStopped(() => { void handleStop(); });
+      await transport.start();
+    } catch (e) {
+      console.error("[WaveformLaView] start failed", e);
+      await handleStop();
+    }
+  }, [props.transport, sampleRate, width, trigger, channels, isRunning, handleStop, retentionBytes]);
+
+  const handleRun = useCallback(() => startLiveCapture("running"), [startLiveCapture]);
+  const handleSingle = useCallback(() => startLiveCapture("single-armed"), [startLiveCapture]);
+  const handleSimulate = useCallback(() => startLiveCapture("running", simTransportRef.current), [startLiveCapture]);
+
+  // While running, poll capture meta and follow the live tail.
+  useEffect(() => {
+    if (!isRunning || !activeCaptureId) return;
+    const id = activeCaptureId;
+    let cancelled = false;
+    const tick = async () => {
+      const meta = await historyRef.current.getMeta(id);
+      if (cancelled || !meta) return;
+      // Only update captureMeta when retention-related fields change — not on every
+      // totalSamples bump, which would retrigger the window-load effect needlessly.
+      setCaptureMeta(prev => {
+        if (!prev) return meta;
+        if (prev.storedBytes === meta.storedBytes &&
+            prev.trimmedBeforeSample === meta.trimmedBeforeSample) return prev;
+        return meta;
+      });
+      if (followTailRef.current) {
+        const total = liveTotalSamplesRef.current || meta.totalSamples;
+        const zoom = zoomSamples ?? total;
+        const target = Math.max(0, total - zoom);
+        setPanSample(prev => (prev === target ? prev : target));
+      }
+      // Trigger overview re-render with latest downsampled data.
+      setLiveOverviewTick(v => v + 1);
+    };
+    tick();
+    const timer = setInterval(tick, 200);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [isRunning, activeCaptureId, zoomSamples]);
+
+  // Clamp pan to the first retained sample so users cannot scroll into evicted history.
+  useEffect(() => {
+    const min = captureMeta?.trimmedBeforeSample ?? 0;
+    if (panSample < min) setPanSample(min);
+  }, [captureMeta?.trimmedBeforeSample, panSample]);
+
+  // Stop capture when the view is hidden or unmounted.
+  useEffect(() => {
+    if (!props.isActive && isRunning) void handleStop();
+  }, [props.isActive, isRunning, handleStop]);
+
+  useEffect(() => {
+    return () => { void handleStop(); };
+  }, [handleStop]);
 
   const DECODE_LIMIT = 1_000_000; // do not run decoders on windows larger than 1M samples to avoid UI stalls
   const canDecode = windowedCapture && windowedCapture.samples.length / (windowedCapture.width === 16 ? 2 : 1) <= DECODE_LIMIT;
@@ -400,6 +691,7 @@ export function WaveformLaView(props: Props) {
   }, []);
 
   const handleImport = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (isRunning) return;
     const file = e.target.files?.[0];
     if (!file) return;
     const generation = ++loadGenerationRef.current;
@@ -412,6 +704,8 @@ export function WaveformLaView(props: Props) {
     setProbeCapture(null);
     // Remove the previous capture from IndexedDB to prevent unbounded growth.
     const oldCaptureId = activeCaptureId;
+    setActiveCaptureId(null);
+    setCaptureMeta(null);
     if (oldCaptureId) {
       await historyRef.current.deleteCapture(oldCaptureId).catch(e => console.error("[import] delete old capture failed", e));
     }
@@ -501,10 +795,11 @@ export function WaveformLaView(props: Props) {
     setZoomSamples(null);
     setPanSample(0);
     if (fileInputRef.current) fileInputRef.current.value = "";
-  }, [activeCaptureId, channels, handleChannelsChange, setWindowedCapture, setProbeCapture]);
+  }, [activeCaptureId, channels, handleChannelsChange, setWindowedCapture, setProbeCapture, isRunning, handleStop]);
 
   const handlePattern = useCallback(async () => {
     if (isRunning) return;
+    await handleStop();
     const generation = ++loadGenerationRef.current;
     const rate = 1_000_000;
     const { samples, dataEndSample } = generateLaTestPattern(rate, 1);
@@ -517,6 +812,8 @@ export function WaveformLaView(props: Props) {
     setProbeCapture(null);
     // Remove the previous capture from IndexedDB to prevent unbounded growth.
     const oldCaptureId = activeCaptureId;
+    setActiveCaptureId(null);
+    setCaptureMeta(null);
     if (oldCaptureId) {
       await historyRef.current.deleteCapture(oldCaptureId).catch(e => console.error("[pattern] delete old capture failed", e));
     }
@@ -550,7 +847,7 @@ export function WaveformLaView(props: Props) {
     const initialZoom = dataEndSample > 0 ? Math.ceil(dataEndSample * 1.5) : null;
     setZoomSamples(initialZoom);
     setPanSample(0);
-  }, [isRunning, activeCaptureId, channels, handleChannelsChange, setWindowedCapture, setProbeCapture]);
+  }, [isRunning, activeCaptureId, channels, handleChannelsChange, setWindowedCapture, setProbeCapture, handleStop]);
 
   const handleExport = useCallback(async () => {
     if (!activeCaptureId || !captureMeta) return;
@@ -610,6 +907,13 @@ export function WaveformLaView(props: Props) {
           className="px-3 py-1 rounded font-bold bg-fob-orange hover:bg-fob-orange/80 disabled:bg-fob-surface disabled:text-fob-text-dim"
         >
           Single
+        </button>
+        <button
+          onClick={handleSimulate}
+          disabled={isRunning}
+          className="px-3 py-1 rounded font-bold bg-fob-blue hover:bg-fob-blue/80 disabled:bg-fob-surface disabled:text-fob-text-dim"
+        >
+          Simulate
         </button>
         <span className="text-fob-text-dim">{acquireMode}</span>
         {captureMeta && (
@@ -732,7 +1036,7 @@ export function WaveformLaView(props: Props) {
             )}
           </div>
           {/* Viewport overview / minimap */}
-          {fullCaptureRef.current && fullCaptureRef.current.samples.length > 0 && (
+          {fullCaptureRef.current && fullCaptureRef.current.samples.length > 0 ? (
             <LaOverview
               samples={fullCaptureRef.current.samples}
               width={fullCaptureRef.current.width}
@@ -742,7 +1046,18 @@ export function WaveformLaView(props: Props) {
               totalSamples={totalSamples}
               onPanChange={setPanSample}
             />
-          )}
+          ) : isRunning && liveOverviewRef.current && liveOverviewWriteRef.current > 0 ? (
+            <LaOverview
+              samples={liveOverviewRef.current.subarray(0, liveOverviewWriteRef.current)}
+              width={captureMeta?.width ?? width}
+              channels={channels}
+              zoomSamples={zoomSamples}
+              panSample={panSample}
+              totalSamples={liveTotalSamplesRef.current || totalSamples}
+              onPanChange={setPanSample}
+              sampleStride={liveOverviewStrideRef.current}
+            />
+          ) : null}
           {/* Bottom decoders panel */}
           <div className="h-40 rounded border border-fob-border overflow-hidden bg-fob-surface shrink-0 min-w-0">
             <LaDecodersPanel
@@ -779,6 +1094,35 @@ export function WaveformLaView(props: Props) {
 
         {/* Right panel */}
         <div className="w-72 flex flex-col gap-2 shrink-0 overflow-y-auto text-[11px] px-1 py-1">
+          <CollapsibleSection title="Acquire">
+            <div className="flex flex-col gap-2 p-1">
+              <label className="flex flex-col gap-0.5">
+                <span className="text-fob-text-dim">Retention budget (MB)</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={4096}
+                  value={Math.round(retentionBytes / (1024 * 1024))}
+                  disabled={isRunning}
+                  onChange={(e) => {
+                    const mb = Math.max(1, Math.min(4096, parseInt(e.target.value, 10) || 0));
+                    setRetentionBytes(mb * 1024 * 1024);
+                  }}
+                  className="w-full px-1 py-0.5 rounded bg-fob-surface border border-fob-border text-fob-text disabled:opacity-50"
+                />
+              </label>
+              {captureMeta && (
+                <div className="text-fob-text-dim">
+                  <div>Used: {((captureMeta.storedBytes ?? 0) / (1024 * 1024)).toFixed(1)} MB</div>
+                  {captureMeta.trimmedBeforeSample ? (
+                    <div>Oldest retained: {(captureMeta.trimmedBeforeSample / captureMeta.sampleRate).toFixed(2)} s</div>
+                  ) : (
+                    <div>All data retained</div>
+                  )}
+                </div>
+              )}
+            </div>
+          </CollapsibleSection>
           <CollapsibleSection title="Channels">
             <ChannelsPanel channels={channels} onChange={handleChannelsChange} />
           </CollapsibleSection>

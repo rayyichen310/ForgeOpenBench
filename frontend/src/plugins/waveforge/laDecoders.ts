@@ -125,7 +125,7 @@ export interface DecoderDefaults {
   lin: { ch: number; baud: number; checksum: "classic" | "enhanced" };
 }
 
-export function inferDecoderDefaults(capture: LaCapture): DecoderDefaults {
+export function inferDecoderDefaults(capture: LaCapture, skipAutoDetect = false): DecoderDefaults {
   const labels = capture.channelLabels ?? [];
   const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
   const find = (names: string[]) => {
@@ -193,6 +193,24 @@ export function inferDecoderDefaults(capture: LaCapture): DecoderDefaults {
   }
   if (oneWireCh >= 0) {
     return { tab: "onewire", uart: { baud: 115200, ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults, lin: linDefaults };
+  }
+  // No labels matched — use signal-based auto-detection.
+  if (!skipAutoDetect) {
+    const auto = autoDetectLaProtocol(capture);
+    if (auto.score > 0) {
+      return {
+        tab: auto.tab,
+        uart: auto.uart ?? { baud: 115200, ch: uartCh },
+        i2c: auto.i2c ?? { scl: 1, sda: 2, addrBits: 7 },
+        spi: auto.spi ? { ...auto.spi, csActiveLow: true } : { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true },
+        can: auto.can ?? canDefaults,
+        onewire: auto.onewire ?? oneWireDefaults,
+        swd: auto.swd ?? swdDefaults,
+        jtag: auto.jtag ?? jtagDefaults,
+        modbus: auto.modbus ?? modbusDefaults,
+        lin: auto.lin ?? linDefaults,
+      };
+    }
   }
   return { tab: "uart", uart: { baud: estimateUartBaud(capture.samples, capture.sampleRate, uartCh), ch: uartCh }, i2c: { scl: 1, sda: 2, addrBits: 7 }, spi: { mosi: detected.mosi, miso: detected.miso, sck: detected.sck, cs: cs >= 0 ? cs : 6, mode: 0, bits: 8, csActiveLow: true }, can: canDefaults, onewire: oneWireDefaults, swd: swdDefaults, jtag: jtagDefaults, modbus: modbusDefaults, lin: linDefaults };
 }
@@ -281,6 +299,488 @@ export interface AutoDetectResult {
   lin?: { ch: number; baud: number; checksum: "classic" | "enhanced" };
 }
 
+// ---------------------------------------------------------------------------
+// Edge-list computation + signal classification (LUT auto-detect Stage 1)
+// ---------------------------------------------------------------------------
+
+export interface Edge {
+  sample: number;       // sample index of transition
+  rising: number;       // bitmask of channels that went high
+  falling: number;      // bitmask of channels that went low
+}
+
+export function computeEdgeList(samples: Uint8Array, width: number): Edge[] {
+  const maxCh = Math.min(width, 16);
+  const edges: Edge[] = [];
+  let prev = samples.length > 0 ? samples[0]! : 0;
+  for (let s = 1; s < samples.length; s++) {
+    const cur = samples[s]!;
+    if (cur === prev) continue;
+    let rising = 0, falling = 0;
+    const diff = cur ^ prev;
+    for (let ch = 0; ch < maxCh; ch++) {
+      if (diff & (1 << ch)) {
+        if (cur & (1 << ch)) rising |= (1 << ch);
+        else falling |= (1 << ch);
+      }
+    }
+    edges.push({ sample: s, rising, falling });
+    prev = cur;
+  }
+  return edges;
+}
+
+export interface ChannelProfile {
+  channel: number;
+  transitionCount: number;
+  idleState: number;        // 0 or 1
+  isClock: boolean;
+  cv: number;               // coefficient of variation of intervals
+  intervals: number[];
+  symbolTime: number;       // shortest recurring interval
+  integerMultiple: boolean;
+  minPulse: number;
+  maxPulse: number;
+}
+
+export interface ClockDataLink {
+  clock: number;
+  data: number;
+  symbolTimeRatio: number;
+  activityOverlap: number;
+}
+
+export type SignalSignatureType =
+  | "uart-start" | "i2c-start" | "i2c-stop" | "can-sof"
+  | "onewire-reset" | "lin-break" | "swd-reset" | "jtag-state";
+
+export interface SignalSignature {
+  type: SignalSignatureType;
+  channel: number;
+  sampleIndex: number;
+}
+
+export interface SignalProfile {
+  edges: Edge[];
+  channels: ChannelProfile[];
+  activeChannels: number[];
+  clocks: number[];
+  dataChannels: number[];
+  clockDataLinks: ClockDataLink[];
+  signatures: SignalSignature[];
+}
+
+function computeChannelProfile(
+  samples: Uint8Array,
+  _width: number,
+  ch: number,
+  edges: Edge[],
+): ChannelProfile {
+  const mask = 1 << ch;
+
+  // Collect transition samples for this channel
+  const transitionSamples: number[] = [];
+  for (const e of edges) {
+    if (e.rising & mask || e.falling & mask) {
+      transitionSamples.push(e.sample);
+    }
+  }
+
+  const transitionCount = transitionSamples.length;
+
+  // Idle state: majority vote on first 1% and last 1%
+  const tailLen = Math.max(1, Math.floor(samples.length * 0.01));
+  let highCount = 0, lowCount = 0;
+  for (let s = 0; s < tailLen; s++) {
+    if ((samples[s]! >> ch) & 1) highCount++; else lowCount++;
+  }
+  for (let s = samples.length - tailLen; s < samples.length; s++) {
+    if ((samples[s]! >> ch) & 1) highCount++; else lowCount++;
+  }
+  const idleState = highCount >= lowCount ? 1 : 0;
+
+  // Intervals between transitions
+  const intervals: number[] = [];
+  for (let i = 1; i < transitionSamples.length; i++) {
+    intervals.push(transitionSamples[i]! - transitionSamples[i - 1]!);
+  }
+
+  // CV (coefficient of variation) — trimmed to exclude idle gaps
+  let mean = 0, variance = 0;
+  if (intervals.length > 0) {
+    // Trimmed CV: exclude intervals > 3× median (idle gaps between transactions)
+    const sorted = [...intervals].sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)]!;
+    const trimmed = intervals.filter(iv => iv <= median * 3);
+    const useIntervals = trimmed.length >= 3 ? trimmed : intervals;
+    mean = useIntervals.reduce((a, b) => a + b, 0) / useIntervals.length;
+    variance = useIntervals.reduce((a, b) => a + (b - mean) * (b - mean), 0) / useIntervals.length;
+  }
+  const stdDev = Math.sqrt(variance);
+  const cv = mean > 0 ? stdDev / mean : 1;
+
+  const isClock = cv < 0.4 && transitionCount >= 4;
+
+  // Symbol time: shortest interval that recurs (min of intervals)
+  const symbolTime = intervals.length > 0 ? Math.min(...intervals) : 0;
+
+  // Integer-multiple check: all intervals ~ k * symbolTime (+/-10%)
+  let integerMultiple = false;
+  if (symbolTime > 0 && intervals.length >= 3) {
+    integerMultiple = intervals.every(iv => {
+      const k = Math.round(iv / symbolTime);
+      if (k < 1) return false;
+      const expected = k * symbolTime;
+      return Math.abs(iv - expected) <= symbolTime * 0.1;
+    });
+  }
+
+  // Min/max pulse
+  const minPulse = intervals.length > 0 ? Math.min(...intervals) : 0;
+  const maxPulse = intervals.length > 0 ? Math.max(...intervals) : 0;
+
+  return {
+    channel: ch,
+    transitionCount,
+    idleState,
+    isClock,
+    cv,
+    intervals,
+    symbolTime,
+    integerMultiple,
+    minPulse,
+    maxPulse,
+  };
+}
+
+function detectClockDataLinks(
+  clocks: ChannelProfile[],
+  dataChannels: ChannelProfile[],
+  edges: Edge[],
+): ClockDataLink[] {
+  const links: ClockDataLink[] = [];
+  for (const clk of clocks) {
+    for (const data of dataChannels) {
+      if (data.channel === clk.channel) continue;
+      // Symbol time ratio
+      const symbolTimeRatio = clk.symbolTime > 0 ? data.symbolTime / clk.symbolTime : 0;
+      // Activity overlap: fraction of data transitions within clock active windows
+      const clkMask = 1 << clk.channel;
+      const dataMask = 1 << data.channel;
+      let dataInClock = 0, dataTotal = 0;
+      for (const e of edges) {
+        if (e.rising & dataMask || e.falling & dataMask) {
+          dataTotal++;
+          // Check if clock is toggling near this sample (within 1 symbolTime)
+          const near = edges.some(e2 =>
+            e2.sample >= e.sample - clk.symbolTime &&
+            e2.sample <= e.sample + clk.symbolTime &&
+            (e2.rising & clkMask || e2.falling & clkMask)
+          );
+          if (near) dataInClock++;
+        }
+      }
+      const activityOverlap = dataTotal > 0 ? dataInClock / dataTotal : 0;
+      if (activityOverlap > 0.5 && symbolTimeRatio > 0.5 && symbolTimeRatio < 2.0) {
+        links.push({ clock: clk.channel, data: data.channel, symbolTimeRatio, activityOverlap });
+      }
+    }
+  }
+  return links;
+}
+
+function detectSignatures(
+  profiles: ChannelProfile[],
+  edges: Edge[],
+  samples: Uint8Array,
+  rate: number,
+  _width: number,
+): SignalSignature[] {
+  const sigs: SignalSignature[] = [];
+
+  for (const p of profiles) {
+    if (p.transitionCount < 2) continue;
+    const mask = 1 << p.channel;
+
+    // UART start: idle-high, first falling edge starts a pulse ~1 symbolTime
+    if (p.idleState === 1 && !p.isClock && p.symbolTime > 0) {
+      const firstFall = edges.find(e => e.falling & mask);
+      if (firstFall) {
+        // Check there's a rising edge within ~10 symbolTimes (a byte frame)
+        const nextRise = edges.find(e =>
+          e.sample > firstFall.sample &&
+          e.rising & mask &&
+          e.sample <= firstFall.sample + p.symbolTime * 12
+        );
+        if (nextRise) {
+          sigs.push({ type: "uart-start", channel: p.channel, sampleIndex: firstFall.sample });
+        }
+      }
+    }
+
+    // CAN SOF: idle-high (recessive), falling edge after long idle, then bit-stuffing pattern
+    if (p.idleState === 1 && !p.isClock && p.symbolTime > 0) {
+      // Look for a gap > 10 symbolTimes before a falling edge (inter-frame space)
+      let prevTransition = -1;
+      for (const e of edges) {
+        if (!(e.falling & mask)) continue;
+        if (prevTransition >= 0 && e.sample - prevTransition > p.symbolTime * 10) {
+          // Potential SOF — check for bit stuffing (>=5 same-level bits -> stuff)
+          const sofSample = e.sample;
+          let runLength = 1;
+          let lastBit = 0;
+          let stuffBits = 0;
+          for (let s = sofSample; s < Math.min(sofSample + p.symbolTime * 30, samples.length); s++) {
+            const bit = (samples[s]! >> p.channel) & 1;
+            if (s === sofSample) { lastBit = bit; runLength = 1; continue; }
+            if (bit === lastBit) {
+              runLength++;
+              if (runLength === 5) {
+                stuffBits++;
+                runLength = 1; // stuff bit resets
+              }
+            } else {
+              runLength = 1;
+              lastBit = bit;
+            }
+          }
+          if (stuffBits >= 1) {
+            sigs.push({ type: "can-sof", channel: p.channel, sampleIndex: sofSample });
+            break;
+          }
+        }
+        prevTransition = e.sample;
+      }
+    }
+
+    // 1-Wire reset: long low pulse (~480µs) followed by presence pulse
+    if (p.idleState === 1 && !p.isClock) {
+      const resetSamples = Math.floor(rate * 0.0004); // ~400µs
+      for (const e of edges) {
+        if (!(e.falling & mask)) continue;
+        // Find the rising edge after this falling edge
+        const riseEdge = edges.find(e2 => e2.sample > e.sample && e2.rising & mask);
+        if (riseEdge && riseEdge.sample - e.sample >= resetSamples * 0.5) {
+          // Check for presence pulse after reset
+          const presenceFall = edges.find(e2 =>
+            e2.sample > riseEdge.sample &&
+            e2.falling & mask &&
+            e2.sample <= riseEdge.sample + resetSamples
+          );
+          if (presenceFall) {
+            sigs.push({ type: "onewire-reset", channel: p.channel, sampleIndex: e.sample });
+            break;
+          }
+        }
+      }
+    }
+
+    // LIN break: >=11 bit-times of continuous low
+    if (p.idleState === 1 && !p.isClock && p.symbolTime > 0) {
+      const breakLen = p.symbolTime * 11;
+      for (const e of edges) {
+        if (!(e.falling & mask)) continue;
+        const riseEdge = edges.find(e2 => e2.sample > e.sample && e2.rising & mask);
+        if (riseEdge && riseEdge.sample - e.sample >= breakLen) {
+          sigs.push({ type: "lin-break", channel: p.channel, sampleIndex: e.sample });
+          break;
+        }
+      }
+    }
+  }
+
+  // I2C start/stop: SDA falls while SCL high / SDA rises while SCL high
+  const clockProfiles = profiles.filter(p => p.isClock);
+  const allActive = profiles.filter(p => p.transitionCount > 0);
+  for (const clk of clockProfiles) {
+    for (const sda of allActive) {
+      if (sda.channel === clk.channel) continue;
+      const sdaMask = 1 << sda.channel;
+      for (const e of edges) {
+        // SDA falling while SCL high
+        if (e.falling & sdaMask) {
+          const sclHigh = (samples[Math.max(0, e.sample - 1)]! >> clk.channel) & 1;
+          const sclHighAfter = (samples[Math.min(samples.length - 1, e.sample + 1)]! >> clk.channel) & 1;
+          if (sclHigh && sclHighAfter) {
+            sigs.push({ type: "i2c-start", channel: sda.channel, sampleIndex: e.sample });
+            break;
+          }
+        }
+      }
+      for (const e of edges) {
+        // SDA rising while SCL high
+        if (e.rising & sdaMask) {
+          const sclHigh = (samples[Math.max(0, e.sample - 1)]! >> clk.channel) & 1;
+          const sclHighAfter = (samples[Math.min(samples.length - 1, e.sample + 1)]! >> clk.channel) & 1;
+          if (sclHigh && sclHighAfter) {
+            sigs.push({ type: "i2c-stop", channel: sda.channel, sampleIndex: e.sample });
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  // SWD reset: >=50 SWCLK cycles with SWDIO held
+  const swdClkProfiles = profiles.filter(p => p.isClock && p.transitionCount >= 100);
+  for (const clk of swdClkProfiles) {
+    for (const dio of profiles) {
+      if (dio.channel === clk.channel) continue;
+      if (dio.transitionCount < 2) continue;
+      // Check if SWDIO is stable (few transitions) while SWCLK has many
+      if (dio.transitionCount <= 5 && clk.transitionCount >= 50) {
+        sigs.push({ type: "swd-reset", channel: dio.channel, sampleIndex: 0 });
+        break;
+      }
+    }
+  }
+
+  return sigs;
+}
+
+export function classifySignal(samples: Uint8Array, width: number, rate: number): SignalProfile {
+  const maxCh = Math.min(width, 16);
+  const edges = computeEdgeList(samples, width);
+
+  const channels: ChannelProfile[] = [];
+  for (let ch = 0; ch < maxCh; ch++) {
+    channels.push(computeChannelProfile(samples, width, ch, edges));
+  }
+
+  const activeChannels = channels
+    .filter(p => p.transitionCount > 0)
+    .map(p => p.channel)
+    .sort((a, b) => a - b);
+
+  const clocks = channels.filter(p => p.isClock).map(p => p.channel);
+  const dataChannels = activeChannels.filter(ch => !clocks.includes(ch));
+
+  const clockProfiles = channels.filter(p => p.isClock);
+  const dataProfiles = channels.filter(p => !p.isClock && p.transitionCount > 0);
+  const clockDataLinks = detectClockDataLinks(clockProfiles, dataProfiles, edges);
+
+  const signatures = detectSignatures(channels, edges, samples, rate, width);
+
+  return { edges, channels, activeChannels, clocks, dataChannels, clockDataLinks, signatures };
+}
+
+// ---------------------------------------------------------------------------
+// Protocol LUT + property scoring (LUT auto-detect Stage 2)
+// ---------------------------------------------------------------------------
+
+interface ProtocolEntry {
+  tab: DecoderTab;
+  minChannels: number;
+  needsClock: boolean;
+  idleHigh: boolean;
+  requiredSignature?: SignalSignatureType;
+  needsIntegerMultiple: boolean;
+  needsChannelLink: boolean;
+  weight: number;
+}
+
+const PROTOCOL_LUT: ProtocolEntry[] = [
+  { tab: "uart",    minChannels: 1, needsClock: false, idleHigh: true,  requiredSignature: "uart-start",    needsIntegerMultiple: true,  needsChannelLink: false, weight: 1 },
+  { tab: "i2c",     minChannels: 2, needsClock: true,  idleHigh: true,  requiredSignature: "i2c-start",     needsIntegerMultiple: true,  needsChannelLink: true,  weight: 2 },
+  { tab: "spi",     minChannels: 3, needsClock: true,  idleHigh: false,                                      needsIntegerMultiple: true,  needsChannelLink: true,  weight: 1 },
+  { tab: "can",     minChannels: 1, needsClock: false, idleHigh: true,  requiredSignature: "can-sof",       needsIntegerMultiple: true,  needsChannelLink: false, weight: 5 },
+  { tab: "onewire", minChannels: 1, needsClock: false, idleHigh: true,  requiredSignature: "onewire-reset", needsIntegerMultiple: false, needsChannelLink: false, weight: 3 },
+  { tab: "swd",     minChannels: 2, needsClock: true,  idleHigh: false, requiredSignature: "swd-reset",     needsIntegerMultiple: true,  needsChannelLink: true,  weight: 3 },
+  { tab: "jtag",    minChannels: 4, needsClock: true,  idleHigh: false,                                      needsIntegerMultiple: true,  needsChannelLink: true,  weight: 2 },
+  { tab: "modbus",  minChannels: 1, needsClock: false, idleHigh: true,  requiredSignature: "uart-start",    needsIntegerMultiple: true,  needsChannelLink: false, weight: 3 },
+  { tab: "lin",     minChannels: 1, needsClock: false, idleHigh: true,  requiredSignature: "lin-break",     needsIntegerMultiple: true,  needsChannelLink: false, weight: 3 },
+];
+
+interface ScoredCandidate {
+  entry: ProtocolEntry;
+  propertyScore: number;
+  reasons: string[];
+}
+
+export function scoreProtocolProperties(profile: SignalProfile): ScoredCandidate[] {
+  const results: ScoredCandidate[] = [];
+
+  for (const entry of PROTOCOL_LUT) {
+    let score = 0;
+    const reasons: string[] = [];
+
+    // Channel count
+    if (profile.activeChannels.length >= entry.minChannels) {
+      score++;
+      reasons.push(`${profile.activeChannels.length}ch >= ${entry.minChannels}`);
+    } else {
+      score--;
+    }
+
+    // Clock presence
+    const hasClock = profile.clocks.length > 0;
+    if (entry.needsClock && hasClock) {
+      score++;
+      reasons.push(`clock on D${profile.clocks.join("/D")}`);
+    } else if (entry.needsClock && !hasClock) {
+      score -= 2; // strong penalty — protocol requires clock but none found
+    } else if (!entry.needsClock && !hasClock) {
+      score++;
+      reasons.push("no clock (async)");
+    }
+
+    // Idle state
+    if (entry.idleHigh) {
+      const allIdleHigh = profile.activeChannels.every(ch =>
+        profile.channels[ch]?.idleState === 1
+      );
+      if (allIdleHigh) {
+        score++;
+        reasons.push("idle high");
+      } else {
+        score--;
+      }
+    }
+
+    // Required signature
+    if (entry.requiredSignature) {
+      const sig = profile.signatures.find(s => s.type === entry.requiredSignature);
+      if (sig) {
+        score++;
+        reasons.push(`${sig.type} at s${sig.sampleIndex}`);
+      } else {
+        score -= 2; // strong penalty — expected signature not found
+      }
+    }
+
+    // Integer-multiple check
+    if (entry.needsIntegerMultiple) {
+      const anyIntMult = profile.activeChannels.some(ch =>
+        profile.channels[ch]?.integerMultiple
+      );
+      if (anyIntMult) {
+        score++;
+        reasons.push("integer-multiple confirmed");
+      } else {
+        score--;
+      }
+    }
+
+    // Channel linking (for multi-channel protocols)
+    if (entry.needsChannelLink) {
+      if (profile.clockDataLinks.length > 0) {
+        score++;
+        reasons.push(`${profile.clockDataLinks.length} clock-data link(s)`);
+      } else {
+        score -= 2; // strong penalty — no correlated clock-data pair
+      }
+    }
+
+    results.push({ entry, propertyScore: score, reasons });
+  }
+
+  // Sort by property score descending, keep top candidates with score >= 3
+  return results
+    .filter(r => r.propertyScore >= 3)
+    .sort((a, b) => b.propertyScore - a.propertyScore)
+    .slice(0, 3);
+}
+
 /**
  * Auto-detect the most likely protocol in a capture.
  * Scores each candidate by the number of valid decoded frames/rows.
@@ -292,7 +792,7 @@ export function autoDetectLaProtocol(capture: LaCapture): AutoDetectResult {
   const width = capture.width;
 
   // If the capture has explicit probe labels, use label-based inference first.
-  const labelDefaults = inferDecoderDefaults(capture);
+  const labelDefaults = inferDecoderDefaults(capture, true);
   if (labelDefaults.tab === "i2c" && labelDefaults.i2c) {
     const frames = decodeI2C(samples, rate, labelDefaults.i2c.scl, labelDefaults.i2c.sda);
     const score = frames.filter(f => f.type === "start" || f.type === "stop").length * 2 + frames.filter(f => f.type === "byte").length;
@@ -349,111 +849,256 @@ export function autoDetectLaProtocol(capture: LaCapture): AutoDetectResult {
     }
   }
 
-  const active = getActiveChannels(samples, width);
+  // --- Stage 1: Signal classification via edge-list ---
+  const profile = classifySignal(samples, width, rate);
+
+  // --- Stage 2: Property scoring → top candidates ---
+  const candidates = scoreProtocolProperties(profile);
+
   let best: AutoDetectResult = { tab: "uart", score: 0, reason: "no active signal detected" };
 
-  // UART: try each active channel as TX.
-  for (const ch of active) {
-    const baud = estimateUartBaud(samples, rate, ch);
-    const rows = decodeUartChunk(samples, rate, baud, ch);
-    const valid = rows.filter(r => !r.error).length;
-    if (valid > best.score) {
-      best = { tab: "uart", score: valid, reason: `UART ${baud.toLocaleString()} baud on D${ch}`, uart: { baud, ch } };
-    }
-  }
+  // --- Stage 3: Targeted decode only top candidates ---
+  for (const cand of candidates) {
+    const { entry, reasons } = cand;
+    const reasonPrefix = reasons.join(", ");
 
-  // I2C: try each pair of active channels as SCL/SDA.
-  for (let i = 0; i < active.length; i++) {
-    for (let j = i + 1; j < active.length; j++) {
-      const scl = active[i]!;
-      const sda = active[j]!;
-      const frames = decodeI2C(samples, rate, scl, sda);
-      const score = frames.filter(f => f.type === "start" || f.type === "stop").length * 2 + frames.filter(f => f.type === "byte").length;
-      if (score > best.score) {
-        best = { tab: "i2c", score, reason: `I2C on D${scl}/D${sda}`, i2c: { scl, sda, addrBits: 7 } };
+    if (entry.tab === "uart") {
+      for (const ch of profile.activeChannels) {
+        const baud = estimateUartBaud(samples, rate, ch);
+        const rows = decodeUartChunk(samples, rate, baud, ch);
+        const valid = rows.filter(r => !r.error).length;
+        if (valid * entry.weight > best.score) {
+          best = { tab: "uart", score: valid * entry.weight, reason: `UART ${baud.toLocaleString()} baud on D${ch} — ${reasonPrefix}`, uart: { baud, ch } };
+        }
       }
     }
-  }
 
-  // SPI: detect clock/data channels, then try all 4 modes.
-  const detected = detectSpiChannels(samples, width);
-  for (const mode of [0, 1, 2, 3] as const) {
-    const frames = decodeSPI(samples, rate, detected.mosi, detected.miso, detected.sck, -1, mode, 8, true);
-    if (frames.length > best.score) {
-      best = { tab: "spi", score: frames.length, reason: `SPI mode ${mode} on D${detected.mosi}/D${detected.sck}`, spi: { ...detected, mode, bits: 8, cs: -1 } };
-    }
-  }
-
-  // CAN: try each active channel at common baud rates.
-  for (const ch of active) {
-    for (const baud of CAN_COMMON_BAUDS) {
-      const frames = decodeCAN(samples, rate, ch, baud);
-      if (frames.length > best.score) {
-        best = { tab: "can", score: frames.length, reason: `CAN ${baud.toLocaleString()} baud on D${ch}`, can: { ch, baud } };
+    if (entry.tab === "i2c") {
+      // Use clock-data links if available, otherwise try all pairs
+      const pairs: [number, number][] = [];
+      if (profile.clockDataLinks.length > 0) {
+        for (const link of profile.clockDataLinks) {
+          pairs.push([link.clock, link.data]);
+          pairs.push([link.data, link.clock]); // try both as SCL/SDA
+        }
+      } else {
+        for (let i = 0; i < profile.activeChannels.length; i++) {
+          for (let j = i + 1; j < profile.activeChannels.length; j++) {
+            pairs.push([profile.activeChannels[i]!, profile.activeChannels[j]!]);
+          }
+        }
+      }
+      for (const [scl, sda] of pairs) {
+        const frames = decodeI2C(samples, rate, scl, sda);
+        let inTx = false, completeBytes = 0, completeStartStop = 0;
+        for (const f of frames) {
+          if (f.type === "start" || f.type === "repeated-start") { inTx = true; completeStartStop++; }
+          else if (f.type === "stop") { inTx = false; completeStartStop++; }
+          else if (f.type === "byte" && inTx) completeBytes++;
+        }
+        const score = (completeStartStop * 2 + completeBytes) * entry.weight;
+        if (score > best.score) {
+          best = { tab: "i2c", score, reason: `I2C on D${scl}/D${sda} — ${reasonPrefix}`, i2c: { scl, sda, addrBits: 7 } };
+        }
       }
     }
-  }
 
-  // 1-Wire: try each active channel.
-  for (const ch of active) {
-    const frames = decodeOneWire(samples, rate, ch);
-    const score = frames.filter(f => f.type === "reset" || f.type === "presence").length;
-    if (score > best.score) {
-      best = { tab: "onewire", score, reason: `1-Wire on D${ch}`, onewire: { ch } };
-    }
-  }
-
-  // SWD: try pairs of active channels as SWDIO/SWCLK.
-  for (let dio = 0; dio < Math.min(width, 16); dio++) {
-    for (let clk = 0; clk < Math.min(width, 16); clk++) {
-      if (dio === clk) continue;
-      if (!active.includes(dio) || !active.includes(clk)) continue;
-      const frames = decodeSWD(samples, rate, dio, clk);
-      const score = frames.filter(f => f.type === "reset").length * 2 + frames.filter(f => f.type === "request").length;
-      if (score > best.score) {
-        best = { tab: "swd", score, reason: `SWD D${dio}/D${clk}`, swd: { swdio: dio, swclk: clk } };
+    if (entry.tab === "spi") {
+      const detected = detectSpiChannels(samples, width);
+      for (const mode of [0, 1, 2, 3] as const) {
+        const frames = decodeSPI(samples, rate, detected.mosi, detected.miso, detected.sck, -1, mode, 8, true);
+        const score = frames.length * entry.weight;
+        if (score > best.score) {
+          best = { tab: "spi", score, reason: `SPI mode ${mode} on D${detected.mosi}/D${detected.sck} — ${reasonPrefix}`, spi: { ...detected, mode, bits: 8, cs: -1 } };
+        }
       }
     }
-  }
 
-  // JTAG: try quadruples of active channels as TCK/TMS/TDI/TDO.
-  for (const tck of active) {
-    for (const tms of active) {
-      if (tms === tck) continue;
-      for (const tdi of active) {
-        if (tdi === tck || tdi === tms) continue;
-        for (const tdo of active) {
-          if (tdo === tck || tdo === tms || tdo === tdi) continue;
-          const frames = decodeJTAG(samples, rate, tck, tms, tdi, tdo);
-          const score = frames.filter(f => f.type === "shift").length * 2 + frames.filter(f => f.type === "state").length;
+    if (entry.tab === "can") {
+      for (const ch of profile.activeChannels) {
+        for (const baud of CAN_COMMON_BAUDS) {
+          const frames = decodeCAN(samples, rate, ch, baud);
+          const score = frames.length * entry.weight;
           if (score > best.score) {
-            best = { tab: "jtag", score, reason: `JTAG D${tck}/D${tms}/D${tdi}/D${tdo}`, jtag: { tck, tms, tdi, tdo } };
+            best = { tab: "can", score, reason: `CAN ${baud.toLocaleString()} baud on D${ch} — ${reasonPrefix}`, can: { ch, baud } };
+          }
+        }
+      }
+    }
+
+    if (entry.tab === "onewire") {
+      for (const ch of profile.activeChannels) {
+        const frames = decodeOneWire(samples, rate, ch);
+        const score = frames.filter(f => f.type === "reset" || f.type === "presence").length * entry.weight;
+        if (score > best.score) {
+          best = { tab: "onewire", score, reason: `1-Wire on D${ch} — ${reasonPrefix}`, onewire: { ch } };
+        }
+      }
+    }
+
+    if (entry.tab === "swd") {
+      for (const link of profile.clockDataLinks) {
+        const frames = decodeSWD(samples, rate, link.data, link.clock);
+        const score = (frames.filter(f => f.type === "reset").length * 2 + frames.filter(f => f.type === "request").length) * entry.weight;
+        if (score > best.score) {
+          best = { tab: "swd", score, reason: `SWD D${link.data}/D${link.clock} — ${reasonPrefix}`, swd: { swdio: link.data, swclk: link.clock } };
+        }
+      }
+      // Fallback: try all active pairs if no links
+      if (profile.clockDataLinks.length === 0) {
+        for (const dio of profile.activeChannels) {
+          for (const clk of profile.activeChannels) {
+            if (dio === clk) continue;
+            const frames = decodeSWD(samples, rate, dio, clk);
+            const score = (frames.filter(f => f.type === "reset").length * 2 + frames.filter(f => f.type === "request").length) * entry.weight;
+            if (score > best.score) {
+              best = { tab: "swd", score, reason: `SWD D${dio}/D${clk} — ${reasonPrefix}`, swd: { swdio: dio, swclk: clk } };
+            }
+          }
+        }
+      }
+    }
+
+    if (entry.tab === "jtag") {
+      const active = profile.activeChannels;
+      for (const tck of active) {
+        for (const tms of active) {
+          if (tms === tck) continue;
+          for (const tdi of active) {
+            if (tdi === tck || tdi === tms) continue;
+            for (const tdo of active) {
+              if (tdo === tck || tdo === tms || tdo === tdi) continue;
+              const frames = decodeJTAG(samples, rate, tck, tms, tdi, tdo);
+              const score = (frames.filter(f => f.type === "shift").length * 2 + frames.filter(f => f.type === "state").length) * entry.weight;
+              if (score > best.score) {
+                best = { tab: "jtag", score, reason: `JTAG D${tck}/D${tms}/D${tdi}/D${tdo} — ${reasonPrefix}`, jtag: { tck, tms, tdi, tdo } };
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (entry.tab === "modbus") {
+      for (const ch of profile.activeChannels) {
+        for (const baud of [9600, 19200, 38400, 57600, 115200]) {
+          for (const parity of (["even", "none", "odd"] as const)) {
+            const frames = decodeModbus(samples, rate, ch, baud, parity);
+            const score = frames.filter(f => f.crcOk).length * entry.weight;
+            if (score > best.score) {
+              best = { tab: "modbus", score, reason: `Modbus RTU ${baud.toLocaleString()} baud D${ch} — ${reasonPrefix}`, modbus: { ch, baud, parity } };
+            }
+          }
+        }
+      }
+    }
+
+    if (entry.tab === "lin") {
+      for (const ch of profile.activeChannels) {
+        for (const baud of LIN_COMMON_BAUDS) {
+          const frames = decodeLIN(samples, rate, ch, baud, "classic");
+          const score = frames.filter(f => f.parityOk && f.checksumOk).length * entry.weight;
+          if (score > best.score) {
+            best = { tab: "lin", score, reason: `LIN ${baud.toLocaleString()} baud D${ch} — ${reasonPrefix}`, lin: { ch, baud, checksum: "classic" } };
           }
         }
       }
     }
   }
 
-  // Modbus: try each active channel at common RTU bauds.
-  for (const ch of active) {
-    for (const baud of [9600, 19200, 38400, 57600, 115200]) {
-      for (const parity of (["even", "none", "odd"] as const)) {
-        const frames = decodeModbus(samples, rate, ch, baud, parity);
-        const score = frames.filter(f => f.crcOk).length * 3;
+  // If property scoring filtered out all candidates, fall back to brute-force.
+  if (candidates.length === 0) {
+    const active = profile.activeChannels;
+    for (const ch of active) {
+      const baud = estimateUartBaud(samples, rate, ch);
+      const rows = decodeUartChunk(samples, rate, baud, ch);
+      const valid = rows.filter(r => !r.error).length;
+      if (valid > best.score) {
+        best = { tab: "uart", score: valid, reason: `UART ${baud.toLocaleString()} baud on D${ch} (fallback)`, uart: { baud, ch } };
+      }
+    }
+    for (let i = 0; i < active.length; i++) {
+      for (let j = i + 1; j < active.length; j++) {
+        const scl = active[i]!, sda = active[j]!;
+        const frames = decodeI2C(samples, rate, scl, sda);
+        let inTx = false, cb = 0, css = 0;
+        for (const f of frames) {
+          if (f.type === "start" || f.type === "repeated-start") { inTx = true; css++; }
+          else if (f.type === "stop") { inTx = false; css++; }
+          else if (f.type === "byte" && inTx) cb++;
+        }
+        const score = css * 2 + cb;
         if (score > best.score) {
-          best = { tab: "modbus", score, reason: `Modbus RTU ${baud.toLocaleString()} baud D${ch}`, modbus: { ch, baud, parity } };
+          best = { tab: "i2c", score, reason: `I2C on D${scl}/D${sda} (fallback)`, i2c: { scl, sda, addrBits: 7 } };
         }
       }
     }
-  }
-
-  // LIN: try each active channel at common baud rates.
-  for (const ch of active) {
-    for (const baud of LIN_COMMON_BAUDS) {
-      const frames = decodeLIN(samples, rate, ch, baud, "classic");
-      const score = frames.filter(f => f.parityOk && f.checksumOk).length * 3;
+    const detected = detectSpiChannels(samples, width);
+    for (const mode of [0, 1, 2, 3] as const) {
+      const frames = decodeSPI(samples, rate, detected.mosi, detected.miso, detected.sck, -1, mode, 8, true);
+      if (frames.length > best.score) {
+        best = { tab: "spi", score: frames.length, reason: `SPI mode ${mode} on D${detected.mosi}/D${detected.sck} (fallback)`, spi: { ...detected, mode, bits: 8, cs: -1 } };
+      }
+    }
+    for (const ch of active) {
+      for (const baud of CAN_COMMON_BAUDS) {
+        const frames = decodeCAN(samples, rate, ch, baud);
+        if (frames.length * 5 > best.score) {
+          best = { tab: "can", score: frames.length * 5, reason: `CAN ${baud.toLocaleString()} baud on D${ch} (fallback)`, can: { ch, baud } };
+        }
+      }
+    }
+    for (const ch of active) {
+      const frames = decodeOneWire(samples, rate, ch);
+      const score = frames.filter(f => f.type === "reset" || f.type === "presence").length;
       if (score > best.score) {
-        best = { tab: "lin", score, reason: `LIN ${baud.toLocaleString()} baud D${ch}`, lin: { ch, baud, checksum: "classic" } };
+        best = { tab: "onewire", score, reason: `1-Wire on D${ch} (fallback)`, onewire: { ch } };
+      }
+    }
+    for (const dio of active) {
+      for (const clk of active) {
+        if (dio === clk) continue;
+        const frames = decodeSWD(samples, rate, dio, clk);
+        const score = frames.filter(f => f.type === "reset").length * 2 + frames.filter(f => f.type === "request").length;
+        if (score > best.score) {
+          best = { tab: "swd", score, reason: `SWD D${dio}/D${clk} (fallback)`, swd: { swdio: dio, swclk: clk } };
+        }
+      }
+    }
+    for (const tck of active) {
+      for (const tms of active) {
+        if (tms === tck) continue;
+        for (const tdi of active) {
+          if (tdi === tck || tdi === tms) continue;
+          for (const tdo of active) {
+            if (tdo === tck || tdo === tms || tdo === tdi) continue;
+            const frames = decodeJTAG(samples, rate, tck, tms, tdi, tdo);
+            const score = frames.filter(f => f.type === "shift").length * 2 + frames.filter(f => f.type === "state").length;
+            if (score > best.score) {
+              best = { tab: "jtag", score, reason: `JTAG D${tck}/D${tms}/D${tdi}/D${tdo} (fallback)`, jtag: { tck, tms, tdi, tdo } };
+            }
+          }
+        }
+      }
+    }
+    for (const ch of active) {
+      for (const baud of [9600, 19200, 38400, 57600, 115200]) {
+        for (const parity of (["even", "none", "odd"] as const)) {
+          const frames = decodeModbus(samples, rate, ch, baud, parity);
+          const score = frames.filter(f => f.crcOk).length * 3;
+          if (score > best.score) {
+            best = { tab: "modbus", score, reason: `Modbus RTU ${baud.toLocaleString()} baud D${ch} (fallback)`, modbus: { ch, baud, parity } };
+          }
+        }
+      }
+    }
+    for (const ch of active) {
+      for (const baud of LIN_COMMON_BAUDS) {
+        const frames = decodeLIN(samples, rate, ch, baud, "classic");
+        const score = frames.filter(f => f.parityOk && f.checksumOk).length * 3;
+        if (score > best.score) {
+          best = { tab: "lin", score, reason: `LIN ${baud.toLocaleString()} baud D${ch} (fallback)`, lin: { ch, baud, checksum: "classic" } };
+        }
       }
     }
   }

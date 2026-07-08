@@ -237,6 +237,10 @@ export function LaCanvas(props: Props) {
       const bpsLocal = bps;
 
       let lastBit = -1;
+      let flatStartPx = -1;
+      let flatBit = -1;
+      const FLAT_THRESHOLD = 50; // px — draw "..." for flat runs wider than this
+
       for (let px = 0; px < plotW; px++) {
         const sStart = Math.floor(panLocal + px * sPerPx);
         const sEnd = Math.min(Math.floor(panLocal + (px + 1) * sPerPx), totalSamples);
@@ -272,6 +276,28 @@ export function LaCanvas(props: Props) {
         }
 
         const x = LABEL_WIDTH + px;
+        const isFlat = !hasHigh || !hasLow;
+
+        // Track flat regions
+        if (isFlat && flatStartPx === -1) {
+          flatStartPx = px;
+          flatBit = firstBit;
+        } else if (!isFlat || (isFlat && flatBit !== -1 && firstBit !== flatBit)) {
+          // Flat region ended — check if it was long enough to draw "..."
+          if (flatStartPx !== -1 && px - flatStartPx > FLAT_THRESHOLD) {
+            const midPx = Math.floor((flatStartPx + px) / 2);
+            const midX = LABEL_WIDTH + midPx;
+            const midY = flatBit ? yHigh : yLow;
+            ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--fob-text-dim").trim() || "#6b7280";
+            ctx.font = "10px monospace";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText("···", midX, midY);
+          }
+          flatStartPx = isFlat ? px : -1;
+          flatBit = isFlat ? firstBit : -1;
+        }
+
         if (lastBit === -1) {
           ctx.moveTo(x, firstBit ? yHigh : yLow);
         } else if (firstBit !== lastBit) {
@@ -291,6 +317,19 @@ export function LaCanvas(props: Props) {
           lastBit = firstBit;
         }
       }
+
+      // Handle flat region that extends to the end of the plot
+      if (flatStartPx !== -1 && plotW - flatStartPx > FLAT_THRESHOLD) {
+        const midPx = Math.floor((flatStartPx + plotW) / 2);
+        const midX = LABEL_WIDTH + midPx;
+        const midY = flatBit ? yHigh : yLow;
+        ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--fob-text-dim").trim() || "#6b7280";
+        ctx.font = "10px monospace";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("···", midX, midY);
+      }
+
       ctx.stroke();
       ctx.globalAlpha = 1;
     });

@@ -73,10 +73,22 @@ class MockIDBObjectStore {
   }
 
   index() {
+    const data = this.data;
     return {
       getAllKeys() {
         const req = new MockIDBRequest();
         queueMicrotask(() => req.dispatchSuccess([]));
+        return req;
+      },
+      getAll(range) {
+        const req = new MockIDBRequest();
+        queueMicrotask(() => {
+          const values = [];
+          for (const record of data.values()) {
+            if (record.captureId === range) values.push(record);
+          }
+          req.dispatchSuccess(values);
+        });
         return req;
       },
     };
@@ -377,5 +389,137 @@ describe("LaHistoryBuffer", () => {
 
     const window = await buf.getWindow(id, 0, 12);
     expect(Array.from(window)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+  });
+
+  it("regression: RLE-compressible appendChunk data reads back byte-identical (cache poisoning)", async () => {
+    const id = await buf.createCapture({
+      sampleRate: 1_000_000,
+      width: 8,
+      source: "stream-test",
+      importedAt: new Date().toISOString(),
+      chunkSize: 10,
+      bps: 1,
+    });
+    // Constant data compresses to ~2 bytes per chunk — the old code cached the
+    // encoded bytes and getWindow returned garbage.
+    const input = new Uint8Array(25).fill(7);
+    await buf.appendChunk(id, input);
+    const before = await buf.getWindow(id, 0, 25);
+    expect(Array.from(before)).toEqual(Array.from(input));
+    await buf.finalizeCapture(id);
+    const after = await buf.getWindow(id, 0, 25);
+    expect(Array.from(after)).toEqual(Array.from(input));
+  });
+
+  it("staged tail is visible through getMeta and getWindow before finalize", async () => {
+    const id = await buf.createCapture({
+      sampleRate: 1_000_000,
+      width: 8,
+      source: "stream-test",
+      importedAt: new Date().toISOString(),
+      chunkSize: 10,
+      bps: 1,
+    });
+    await buf.appendChunk(id, new Uint8Array([0, 1, 2, 3, 4])); // less than one chunk
+    const meta = await buf.getMeta(id);
+    expect(meta.totalSamples).toBe(5);
+    expect(meta.chunkCount).toBe(1); // virtual staged chunk
+    const window = await buf.getWindow(id, 0, 5);
+    expect(Array.from(window)).toEqual([0, 1, 2, 3, 4]);
+
+    await buf.appendChunk(id, new Uint8Array([5, 6, 7, 8, 9, 10, 11])); // spills into chunk 1
+    const meta2 = await buf.getMeta(id);
+    expect(meta2.totalSamples).toBe(12);
+    const window2 = await buf.getWindow(id, 8, 4); // spans flushed chunk 0 and staged chunk 1
+    expect(Array.from(window2)).toEqual([8, 9, 10, 11]);
+  });
+
+  it("persists each chunk exactly once (write-behind, no read-modify-write)", async () => {
+    const id = await buf.createCapture({
+      sampleRate: 1_000_000,
+      width: 8,
+      source: "stream-test",
+      importedAt: new Date().toISOString(),
+      chunkSize: 10,
+      bps: 1,
+    });
+    let putCalls = 0;
+    const origPutChunks = buf["store"].putChunks.bind(buf["store"]);
+    buf["store"].putChunks = (records) => {
+      putCalls += records.length;
+      return origPutChunks(records);
+    };
+    for (let i = 0; i < 4; i++) {
+      await buf.appendChunk(id, new Uint8Array(8).map((_, j) => i * 8 + j)); // 32 bytes in 8-byte writes
+    }
+    expect(putCalls).toBe(3); // three full chunks flushed, 2 samples staged
+    const meta = await buf.finalizeCapture(id);
+    expect(putCalls).toBe(4); // final partial chunk
+    expect(meta.totalSamples).toBe(32);
+    expect(meta.chunkCount).toBe(4);
+    const window = await buf.getWindow(id, 0, 32);
+    expect(Array.from(window)).toEqual(Array.from({ length: 32 }, (_, i) => i));
+  });
+
+  it("resume-append after finalize extends the partial last chunk (backfill)", async () => {
+    const id = await buf.createCapture({
+      sampleRate: 1_000_000,
+      width: 8,
+      source: "stream-test",
+      importedAt: new Date().toISOString(),
+      chunkSize: 10,
+      bps: 1,
+    });
+    await buf.appendChunk(id, new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7]));
+    await buf.finalizeCapture(id); // persists partial chunk 0 (8 samples)
+    await buf.appendChunk(id, new Uint8Array([8, 9, 10, 11])); // fills chunk 0, stages 2
+    const meta = await buf.finalizeCapture(id);
+    expect(meta.totalSamples).toBe(12);
+    expect(meta.chunkCount).toBe(2);
+    const window = await buf.getWindow(id, 0, 12);
+    expect(Array.from(window)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+  });
+
+  it("evicts oldest chunks when storedBytes exceeds retentionBytes", async () => {
+    const id = await buf.createCapture({
+      sampleRate: 1_000_000,
+      width: 8,
+      source: "stream-test",
+      importedAt: new Date().toISOString(),
+      chunkSize: 10,
+      bps: 1,
+      retentionBytes: 30,
+    });
+    // Three full chunks of 10 bytes each ≈ 30 bytes budget, but encoded length is the raw length
+    // here (RLE of flat-ish data). Stream enough to create 3 full chunks.
+    for (let i = 0; i < 5; i++) {
+      await buf.appendChunk(id, new Uint8Array(10).map((_, j) => i * 10 + j));
+    }
+    const meta = await buf.finalizeCapture(id);
+    expect(meta.totalSamples).toBe(50);
+    expect(meta.storedBytes).toBeLessThanOrEqual(30);
+    expect(meta.trimmedBeforeSample).toBeGreaterThan(0);
+  });
+
+  it("updates trimmedBeforeSample and getWindow returns empty for fully trimmed ranges", async () => {
+    const id = await buf.createCapture({
+      sampleRate: 1_000_000,
+      width: 8,
+      source: "stream-test",
+      importedAt: new Date().toISOString(),
+      chunkSize: 10,
+      bps: 1,
+      retentionBytes: 20,
+    });
+    for (let i = 0; i < 5; i++) {
+      await buf.appendChunk(id, new Uint8Array(10).map((_, j) => i * 10 + j));
+    }
+    await buf.finalizeCapture(id);
+    const meta = await buf.getMeta(id);
+    expect(meta.trimmedBeforeSample).toBeGreaterThanOrEqual(10);
+    const before = await buf.getWindow(id, 0, meta.trimmedBeforeSample);
+    expect(before.length).toBe(0);
+    const after = await buf.getWindow(id, meta.trimmedBeforeSample, meta.totalSamples - meta.trimmedBeforeSample);
+    expect(after.length).toBeGreaterThan(0);
   });
 });
