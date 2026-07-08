@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.9.1-rc28] — 2026-07-08
+
+### Added
+- **WaveForge LA — three-stage LUT protocol auto-detection**
+  - `computeEdgeList`: extracts rising/falling transitions per channel in a single O(samples) pass.
+  - `classifySignal`: builds `SignalProfile` with per-channel `ChannelProfile` (clock detection via trimmed CV, idle state, symbol time) and `SignalSignature` detection (UART start, CAN SOF, I2C start/stop, 1-Wire reset, LIN break, SWD reset).
+  - `scoreProtocolProperties`: scores all 10 protocols against `PROTOCOL_LUT` using signatures, integer-multiple clock relationships, and channel linking — returns sorted `ScoredCandidate[]`.
+  - `autoDetectLaProtocol` now uses the three-stage pipeline (classify → score → targeted decode top 3) with brute-force fallback for edge cases.
+  - Canvas flat-region `···` indicator draws ellipsis when consecutive same-value pixels exceed 50px.
+- **WaveForge LA — IncrementalClassifier for live multi-protocol detection**
+  - Stateful, append-only classifier that grows edge lists across chunks without recomputing from scratch.
+  - Per-channel-group hypotheses via union-find clustering — detects independent protocols on separate channel groups (e.g. UART on D0 + I2C on D1/D2).
+  - Confidence scoring: `propertyScore × edgeMaturity` (0..1), stable when top hypothesis >70%.
+  - Auto channel labels: SCL/SDA, MOSI/MISO/SCK, SWCLK/SWDIO, TCK/TMS/TDI/TDO, UART TX, CAN, 1-Wire, RS485, LIN — all with confidence %.
+  - Live wiring: each `onData` chunk feeds the classifier; toolbar displays `UART 85% | I2C 72%`; channel labels auto-update at >30% confidence; decoder refreshes when protocol changes and is stable.
+  - 13 new unit tests (201 total).
+
+### Fixed
+- Union-find `find()` in `groupChannels` had infinite loop — path compression didn't terminate when root pointed to itself.
+
 ## [0.9.1-rc27] — 2026-07-07
 
 ### Added
