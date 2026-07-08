@@ -9,6 +9,8 @@ import {
   detectClockDataLinks,
   detectSignatures,
   scoreProtocolProperties,
+  groupChannelsByLinks,
+  classifyChannelRoles,
 } from "./laDecoders";
 
 // ---------------------------------------------------------------------------
@@ -183,6 +185,7 @@ export class IncrementalClassifier {
     const clockDataLinks = detectClockDataLinks(clockProfiles, dataProfiles, this.allEdges);
 
     const signatures = detectSignatures(channels, this.allEdges, this.sampleBuffer, this.rate, this.width);
+    const roles = classifyChannelRoles(channels, clockDataLinks, this.allEdges);
 
     return {
       edges: this.allEdges,
@@ -192,52 +195,12 @@ export class IncrementalClassifier {
       dataChannels,
       clockDataLinks,
       signatures,
+      roles,
     };
   }
 
-  /**
-   * Group active channels into independent clusters.
-   * Channels linked by clock-data pairs form one group.
-   * Unlinked async channels each form their own group.
-   */
   private groupChannels(profile: SignalProfile): number[][] {
-    const active = profile.activeChannels;
-    if (active.length === 0) return [];
-
-    // Union-Find for grouping
-    const parent = new Map<number, number>();
-    for (const ch of active) parent.set(ch, ch);
-    const find = (x: number): number => {
-      let root = x;
-      while (parent.get(root)! !== root) root = parent.get(root)!;
-      // Path compression
-      let curr = x;
-      while (curr !== root) {
-        const next = parent.get(curr)!;
-        parent.set(curr, root);
-        curr = next;
-      }
-      return root;
-    };
-    const union = (a: number, b: number) => {
-      const ra = find(a), rb = find(b);
-      if (ra !== rb) parent.set(ra, rb);
-    };
-
-    // Link clock-data pairs
-    for (const link of profile.clockDataLinks) {
-      union(link.clock, link.data);
-    }
-
-    // Collect groups
-    const groupMap = new Map<number, number[]>();
-    for (const ch of active) {
-      const root = find(ch);
-      if (!groupMap.has(root)) groupMap.set(root, []);
-      groupMap.get(root)!.push(ch);
-    }
-
-    return Array.from(groupMap.values()).map(g => g.sort((a, b) => a - b));
+    return groupChannelsByLinks(profile);
   }
 
   /**

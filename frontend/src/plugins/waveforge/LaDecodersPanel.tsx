@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
-import { autoDetectLaProtocol } from "./laDecoders";
+import { autoDetectLaProtocolMulti } from "./laDecoders";
 import type { DecoderTab, LaCapture, AutoDetectResult, TickerRow, I2CFrame, SPIFrame, CANFrame, OneWireFrame, SWDFrame, JTAGFrame, ModbusFrame, LINFrame } from "./laDecoders";
 import { DEFAULT_BAUDS, DEFAULT_LABEL_WIDTH } from "./laChannelConfig";
 
@@ -63,7 +63,7 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, panSample, zoo
   const [jtag, setJtag] = useState<JtagConfig>(defaultJtag ?? { tck: 0, tms: 1, tdi: 2, tdo: 3 });
   const [modbus, setModbus] = useState<ModbusConfig>(defaultModbus ?? { ch: 0, baud: 9600, parity: "even" });
   const [lin, setLin] = useState<LinConfig>(defaultLin ?? { ch: 0, baud: 19200, checksum: "classic" });
-  const [lastAutoDetect, setLastAutoDetect] = useState<AutoDetectResult | null>(null);
+  const [lastAutoDetect, setLastAutoDetect] = useState<AutoDetectResult[] | null>(null);
 
   useEffect(() => { if (defaultUart) setUart(defaultUart); }, [defaultUart]);
   useEffect(() => { if (defaultI2c) setI2c(defaultI2c); }, [defaultI2c]);
@@ -82,8 +82,26 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, panSample, zoo
   const handleAutoDetect = useCallback(() => {
     if (!effectiveBuf || effectiveBuf.length === 0 || effectiveRate <= 0) return;
     const cap = capture ?? { samples: effectiveBuf, sampleRate: effectiveRate, width: 8, source: "live", importedAt: new Date().toISOString() };
-    const result = autoDetectLaProtocol(cap);
-    setLastAutoDetect(result);
+    const results = autoDetectLaProtocolMulti(cap);
+    setLastAutoDetect(results);
+    // Apply the top result
+    const result = results[0];
+    if (result) {
+      const patch: Partial<{ tab: DecoderTab; uart: UartConfig; i2c: I2cConfig; spi: SpiConfig; can: CanConfig; onewire: OneWireConfig; swd: SwdConfig; jtag: JtagConfig; modbus: ModbusConfig; lin: LinConfig }> = { tab: result.tab };
+      if (result.uart) patch.uart = result.uart;
+      if (result.i2c) patch.i2c = result.i2c;
+      if (result.spi) patch.spi = { ...result.spi, csActiveLow: spi.csActiveLow };
+      if (result.can) patch.can = result.can;
+      if (result.onewire) patch.onewire = result.onewire;
+      if (result.swd) patch.swd = result.swd;
+      if (result.jtag) patch.jtag = result.jtag;
+      if (result.modbus) patch.modbus = result.modbus;
+      if (result.lin) patch.lin = result.lin;
+      handleChange(patch);
+    }
+  }, [effectiveBuf, effectiveRate, capture, handleChange, spi.csActiveLow]);
+
+  const applyAutoDetectResult = useCallback((result: AutoDetectResult) => {
     const patch: Partial<{ tab: DecoderTab; uart: UartConfig; i2c: I2cConfig; spi: SpiConfig; can: CanConfig; onewire: OneWireConfig; swd: SwdConfig; jtag: JtagConfig; modbus: ModbusConfig; lin: LinConfig }> = { tab: result.tab };
     if (result.uart) patch.uart = result.uart;
     if (result.i2c) patch.i2c = result.i2c;
@@ -95,7 +113,7 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, panSample, zoo
     if (result.modbus) patch.modbus = result.modbus;
     if (result.lin) patch.lin = result.lin;
     handleChange(patch);
-  }, [effectiveBuf, effectiveRate, capture, handleChange, spi.csActiveLow]);
+  }, [handleChange, spi.csActiveLow]);
 
   const stripRows = useMemo<TicketItem[]>(() => {
     const pan = panSample ?? 0;
@@ -185,9 +203,19 @@ export function LaDecodersPanel({ frozenBuf, sampleRate, capture, panSample, zoo
           Auto
         </button>
       </div>
-      {lastAutoDetect && (
-        <div className="px-2 py-0.5 text-[10px] text-fob-text-dim border-b border-fob-border bg-fob-surface shrink-0">
-          Auto-detect: {lastAutoDetect.reason} (score {lastAutoDetect.score})
+      {lastAutoDetect && lastAutoDetect.length > 0 && (
+        <div className="px-2 py-0.5 text-[10px] text-fob-text-dim border-b border-fob-border bg-fob-surface shrink-0 flex flex-wrap items-center gap-1">
+          <span>Auto-detect:</span>
+          {lastAutoDetect.map((r, i) => (
+            <button
+              key={i}
+              onClick={() => applyAutoDetectResult(r)}
+              className={`px-1.5 py-0.5 rounded-full font-bold uppercase border transition-colors ${r.tab === tab ? "bg-fob-orange text-fob-accent-text border-fob-orange" : "bg-fob-surface border-fob-border hover:bg-fob-border text-fob-text-dim"}`}
+              title={r.reason}
+            >
+              {r.tab} ({r.score})
+            </button>
+          ))}
         </div>
       )}
 

@@ -22,6 +22,7 @@ import {
   MAX_TICKER,
   inferDecoderDefaults,
   autoDetectLaProtocol,
+  autoDetectLaProtocolMulti,
   findNearestI2CFrame,
   computeEdgeList,
   classifySignal,
@@ -483,6 +484,66 @@ describe("autoDetectLaProtocol", () => {
     expect(result.score).toBeGreaterThan(0);
     expect(result.tab).toBe("modbus");
     expect(result.modbus).toBeDefined();
+  });
+});
+
+describe("autoDetectLaProtocolMulti", () => {
+  const cap = (samples: Uint8Array, rate: number, labels?: string[]): LaCapture => ({
+    sampleRate: rate, width: 8, samples, source: "live", importedAt: new Date().toISOString(),
+    channelLabels: labels,
+  });
+
+  it("returns empty array for empty signal", () => {
+    const results = autoDetectLaProtocolMulti(cap(new Uint8Array(100), 1_000_000));
+    expect(results.length).toBe(0);
+  });
+
+  it("returns single result for UART-only signal", () => {
+    const rate = 1_152_000;
+    const samples = buildUartSignal([0x48, 0x65, 0x6c], 10, 2);
+    const results = autoDetectLaProtocolMulti(cap(samples, rate));
+    expect(results.length).toBeGreaterThanOrEqual(1);
+    expect(results[0]!.score).toBeGreaterThan(0);
+    expect(results[0]!.uart).toBeDefined();
+  });
+
+  it("returns multiple results for multi-protocol signal (UART + I2C)", () => {
+    // UART on channel 0, I2C on channels 1+2
+    const uartSamples = buildUartSignal([0x41, 0x42, 0x43], 10, 0);
+    const i2cSamples = buildI2cSignal(0x50, true, [{ byte: 0xAB, ack: true }, { byte: 0xCD, ack: true }], 10, 1, 2);
+    // Merge: combine byte-by-byte (both signals in same sample stream)
+    const len = Math.max(uartSamples.length, i2cSamples.length);
+    const merged = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      let byte = 0;
+      if (i < uartSamples.length) byte |= uartSamples[i]!;
+      if (i < i2cSamples.length) byte |= i2cSamples[i]!;
+      merged[i] = byte;
+    }
+    const results = autoDetectLaProtocolMulti(cap(merged, 1_000_000));
+    expect(results.length).toBeGreaterThanOrEqual(2);
+    const tabs = results.map(r => r.tab);
+    expect(tabs).toContain("uart");
+    expect(tabs).toContain("i2c");
+  });
+
+  it("autoDetectLaProtocol returns same top result as autoDetectLaProtocolMulti[0]", () => {
+    const rate = 1_152_000;
+    const samples = buildUartSignal([0x48, 0x65, 0x6c], 10, 2);
+    const single = autoDetectLaProtocol(cap(samples, rate));
+    const multi = autoDetectLaProtocolMulti(cap(samples, rate));
+    if (multi.length > 0) {
+      expect(single.tab).toBe(multi[0]!.tab);
+      expect(single.score).toBe(multi[0]!.score);
+    }
+  });
+
+  it("returns results sorted by score descending", () => {
+    const samples = generateLaTestPattern(1_000_000, 1).samples;
+    const results = autoDetectLaProtocolMulti(cap(samples, 1_000_000));
+    for (let i = 1; i < results.length; i++) {
+      expect(results[i]!.score).toBeLessThanOrEqual(results[i - 1]!.score);
+    }
   });
 });
 
