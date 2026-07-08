@@ -16,6 +16,7 @@ import { inferDecoderDefaults, generateLaTestPattern, decodeUartChunk, decodeI2C
 import { parseLaCsv, parseLaJson, detectLaFormat, streamSigrokSr } from "./laImport";
 import { downloadLaCapture } from "./laExport";
 import { LaHistoryBuffer, type LaCaptureMeta } from "./LaHistoryBuffer";
+import { IncrementalClassifier, type ClassificationUpdate } from "./IncrementalClassifier";
 
 interface Props {
   transport: IUsbTransport;
@@ -111,6 +112,8 @@ export function WaveformLaView(props: Props) {
   const [captureMeta, setCaptureMeta] = useState<LaCaptureMeta | null>(null);
   const [windowedCapture, setWindowedCapture] = useState<LaCapture | null>(null);
   const [probeCapture, setProbeCapture] = useState<LaCapture | null>(null);
+  const probeCaptureRef = useRef<LaCapture | null>(null);
+  useEffect(() => { probeCaptureRef.current = probeCapture; }, [probeCapture]);
 
   // Live capture bookkeeping
   const activeTransportRef = useRef<IUsbTransport>(props.transport);
@@ -131,6 +134,9 @@ export function WaveformLaView(props: Props) {
   const liveTailWriteRef = useRef(0);
   const liveTailMaxSamplesRef = useRef(2_000_000);
   const [, setLiveOverviewTick] = useState(0);
+  const classifierRef = useRef<IncrementalClassifier | null>(null);
+  const lastProtocolRef = useRef<string>("");
+  const [liveClassification, setLiveClassification] = useState<ClassificationUpdate | null>(null);
   useEffect(() => { acquireModeRef.current = acquireMode; }, [acquireMode]);
 
   const IN_MEMORY_THRESHOLD = 50 * 1024 * 1024; // 50 MB — slice synchronously, skip IndexedDB on pan/zoom
@@ -426,12 +432,15 @@ export function WaveformLaView(props: Props) {
     liveTailRef.current = null;
     liveTailStartRef.current = 0;
     liveTailWriteRef.current = 0;
+    setLiveClassification(null);
     try {
       await transport.configure({ mode: "la", sample_rate_hz: sampleRate, sample_width: width });
       const effectiveRate = transport.effectiveSampleRate ?? sampleRate;
       const effectiveWidth = transport.effectiveWidth ?? width;
       const effectiveBps = effectiveWidth === 16 ? 2 : 1;
       const effectiveLabels = transport.effectiveChannelLabels ?? channels.map(c => c.label);
+      classifierRef.current = new IncrementalClassifier(effectiveWidth, effectiveRate);
+      lastProtocolRef.current = "";
       const id = await historyRef.current.createCapture({
         sampleRate: effectiveRate,
         width: effectiveWidth,
@@ -533,6 +542,47 @@ export function WaveformLaView(props: Props) {
             importedAt: new Date().toISOString(),
             channelLabels: effectiveLabels,
           });
+        }
+
+        // Feed chunk to incremental classifier for live protocol detection.
+        const cls = classifierRef.current;
+        if (cls) {
+          const clsUpdate = cls.update(bytes, chunkSamples);
+          setLiveClassification(clsUpdate);
+          // Auto-update channel labels from classification
+          if (clsUpdate.channelLabels.length > 0) {
+            const newLabels = channels.map(ch => {
+              const cl = clsUpdate.channelLabels.find(l => l.channel === ch.id);
+              return cl && cl.confidence > 0.3 ? cl.label : ch.label;
+            });
+            // Only update if labels actually changed
+            const oldLabels = channels.map(c => c.label);
+            if (newLabels.some((l, i) => l !== oldLabels[i])) {
+              handleChannelsChange(channels.map((ch, i) => ({ ...ch, label: newLabels[i] ?? ch.label })));
+            }
+          }
+          // Refresh decoder when top protocol changes
+          const topProto = clsUpdate.hypotheses[0]?.protocol ?? "";
+          if (topProto && topProto !== lastProtocolRef.current && clsUpdate.stable) {
+            lastProtocolRef.current = topProto;
+            // Re-infer decoder defaults from the probe capture with new info
+            const probe = probeCaptureRef.current;
+            if (probe) {
+              const newDefaults = inferDecoderDefaults(probe);
+              setDecoderState({
+                tab: newDefaults.tab,
+                uart: newDefaults.uart,
+                i2c: newDefaults.i2c,
+                spi: newDefaults.spi,
+                can: newDefaults.can,
+                onewire: newDefaults.onewire,
+                swd: newDefaults.swd,
+                jtag: newDefaults.jtag,
+                modbus: newDefaults.modbus,
+                lin: newDefaults.lin,
+              });
+            }
+          }
         }
 
         lastWriteRef.current = lastWriteRef.current.then(async () => {
@@ -916,6 +966,13 @@ export function WaveformLaView(props: Props) {
           Simulate
         </button>
         <span className="text-fob-text-dim">{acquireMode}</span>
+        {liveClassification && liveClassification.hypotheses.length > 0 && (
+          <span className="text-fob-text-dim text-xs">
+            {liveClassification.hypotheses.map(h =>
+              `${h.protocol.toUpperCase()} ${Math.round(h.confidence * 100)}%`
+            ).join(" | ")}
+          </span>
+        )}
         {captureMeta && (
           <span className="text-fob-text-dim">
             {captureMeta.totalSamples.toLocaleString()} samples @ {(captureMeta.sampleRate / 1e6).toFixed(1)} MHz

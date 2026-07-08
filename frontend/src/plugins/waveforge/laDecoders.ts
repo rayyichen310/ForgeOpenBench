@@ -370,7 +370,7 @@ export interface SignalProfile {
   signatures: SignalSignature[];
 }
 
-function computeChannelProfile(
+export function computeChannelProfile(
   samples: Uint8Array,
   _width: number,
   ch: number,
@@ -453,7 +453,7 @@ function computeChannelProfile(
   };
 }
 
-function detectClockDataLinks(
+export function detectClockDataLinks(
   clocks: ChannelProfile[],
   dataChannels: ChannelProfile[],
   edges: Edge[],
@@ -489,7 +489,7 @@ function detectClockDataLinks(
   return links;
 }
 
-function detectSignatures(
+export function detectSignatures(
   profiles: ChannelProfile[],
   edges: Edge[],
   samples: Uint8Array,
@@ -668,7 +668,7 @@ export function classifySignal(samples: Uint8Array, width: number, rate: number)
 // Protocol LUT + property scoring (LUT auto-detect Stage 2)
 // ---------------------------------------------------------------------------
 
-interface ProtocolEntry {
+export interface ProtocolEntry {
   tab: DecoderTab;
   minChannels: number;
   needsClock: boolean;
@@ -679,7 +679,7 @@ interface ProtocolEntry {
   weight: number;
 }
 
-const PROTOCOL_LUT: ProtocolEntry[] = [
+export const PROTOCOL_LUT: ProtocolEntry[] = [
   { tab: "uart",    minChannels: 1, needsClock: false, idleHigh: true,  requiredSignature: "uart-start",    needsIntegerMultiple: true,  needsChannelLink: false, weight: 1 },
   { tab: "i2c",     minChannels: 2, needsClock: true,  idleHigh: true,  requiredSignature: "i2c-start",     needsIntegerMultiple: true,  needsChannelLink: true,  weight: 2 },
   { tab: "spi",     minChannels: 3, needsClock: true,  idleHigh: false,                                      needsIntegerMultiple: true,  needsChannelLink: true,  weight: 1 },
@@ -691,7 +691,7 @@ const PROTOCOL_LUT: ProtocolEntry[] = [
   { tab: "lin",     minChannels: 1, needsClock: false, idleHigh: true,  requiredSignature: "lin-break",     needsIntegerMultiple: true,  needsChannelLink: false, weight: 3 },
 ];
 
-interface ScoredCandidate {
+export interface ScoredCandidate {
   entry: ProtocolEntry;
   propertyScore: number;
   reasons: string[];
