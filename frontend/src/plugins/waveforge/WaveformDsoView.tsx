@@ -18,7 +18,7 @@ import {
   makeDrawTriggerLine, makeDrawPhosphor, makeDrawReference,
   makeDrawCursors, makeDrawZoomBox, makeDrawFftPeaks,
 } from "./canvasOverlays";
-import { renderNow } from "./renderEngine";
+import { renderNow, xyPaths } from "./renderEngine";
 import { handleAcquireMode } from "./acquireModes";
 import { timeAxisValues, freqAxisValues, makeVoltAxisValues } from "./axisFormatters";
 import {
@@ -214,7 +214,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
   const cursorBRef = useRef(cursorB);
   useEffect(() => { cursorBRef.current = cursorB; }, [cursorB]);
   const cursorsEnabledRef = useRef(cursorsEnabled);
-  useEffect(() => { cursorsEnabledRef.current = cursorsEnabled; }, [cursorsEnabled]);
+  useEffect(() => { cursorsEnabledRef.current = cursorsEnabled; plotRef.current?.redraw(false, false); }, [cursorsEnabled]);
 
   // Reference waveform snapshot
   const referenceSnapRef = useRef<TraceSnapshot | null>(null);
@@ -355,7 +355,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
       rollingLockedSnapRef: rollingLockedSnap,
     });
     const drawReference = makeDrawReference({ snapRef: referenceSnapRef });
-    const drawCursors = makeDrawCursors({ cursorARef, cursorBRef });
+    const drawCursors = makeDrawCursors({ cursorARef, cursorBRef, enabledRef:cursorsEnabledRef });
     const drawFftPeaks = makeDrawFftPeaks({ enabledRef: fftPeaksEnabledRef });
 
     let opts: uPlot.Options;
@@ -389,7 +389,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
         ],
         series: [
           {},
-          { stroke: "#4ADE80", width: 1.5, label: "XY", show: true },
+          { stroke: "#4ADE80", width: 1.5, label: "XY", show: true, paths: xyPaths, points: {show:false} },
           { stroke: "#60A5FA", width: 1.5, label: "CH2", show: false },
           { stroke: "#4ADE80", width: 1.5, label: "MATH", show: false },
         ],
@@ -967,6 +967,18 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
     setAcquireMode("single-armed");
   };
   const handleAutoSet = async () => {
+    // Single trigger would stop and clear the fresh frame before AutoSet can inspect it.
+    triggerRef.current = {...triggerRef.current, mode:'auto'};
+    setTrigger(triggerRef.current);
+    // A stopped/single-held scope has no acquisition buffer. Acquire fresh data first.
+    if (!runningRef.current) {
+      await startRef.current();
+      if (!runningRef.current) throw new Error('AutoSet capture start failed');
+    }
+    const deadline = performance.now() + 2000;
+    while (ch1Buf.current.length < 100 && runningRef.current && performance.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
     const result = autoset(ch1Buf.current, ch2Buf.current, sampleRate, VDIV_STEPS, SDIV_STEPS);
     if (result) {
       autoSettingRef.current = true;
@@ -1030,6 +1042,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
       notifyAutoSetDone();
     } else {
       notifyAutoSetFailed();
+      throw new Error('AutoSet requires captured signal data');
     }
     autoSettingRef.current = false;
   };
@@ -1083,10 +1096,8 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
     notifyReferenceCleared();
   };
 
-  const handleSavePreset = () => {
-    const base = uniquePresetName(presets, selectedPreset || "Setup");
-    const name = window.prompt("Save preset as:", base);
-    if (!name) return;
+  const handleSavePreset = (name: string) => {
+    if (!name.trim()) return;
     const finalName = uniquePresetName(presets, name.trim());
     const preset = createPreset(finalName, {
       ch1Vertical, ch2Vertical, horizontal, trigger, math,
@@ -1124,13 +1135,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
   };
 
   const handleExportPresets = () => {
-    const blob = new Blob([exportPresets(presets)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `scope-presets-${new Date().toISOString().slice(0, 10)}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+    return exportPresets(presets);
   };
 
   const handleImportPresets = (json: string) => {
@@ -1232,7 +1237,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
         onRun={handleRun}
         onStop={handleStop}
         onSingle={handleSingle}
-        onAutoSet={handleAutoSet}
+        onAutoSet={() => { void handleAutoSet().catch(error => notifyError(error.message)); }}
         onForceTrigger={handleForceTrigger}
         onClear={handleClear}
         rollMode={horizontal.rollMode}

@@ -1,4 +1,5 @@
 import type { ScopePreset } from "./scopeTypes";
+import { validateScopePatch } from "./scopeSettings";
 
 const PRESETS_KEY = "waveforge:scopePresets";
 
@@ -36,14 +37,16 @@ export function importPresets(json: string): ScopePreset[] | null {
   try {
     const parsed = JSON.parse(json) as unknown;
     if (!Array.isArray(parsed)) return null;
-    return parsed.filter((p): p is ScopePreset =>
+    if (!parsed.every((p): p is ScopePreset =>
       typeof p === "object" &&
       p !== null &&
       typeof (p as ScopePreset).name === "string" &&
       typeof (p as ScopePreset).createdAt === "number" &&
       typeof (p as ScopePreset).state === "object" &&
       (p as ScopePreset).state !== null
-    );
+    )) return null;
+    for (const preset of parsed as ScopePreset[]) validateScopePatch(preset.state, true);
+    return parsed as ScopePreset[];
   } catch {
     return null;
   }

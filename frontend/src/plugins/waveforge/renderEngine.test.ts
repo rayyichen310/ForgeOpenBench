@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { findTriggerIndex, renderNow, type RenderCtx } from './renderEngine';
+import { findTriggerIndex, renderNow, xyPaths, type RenderCtx } from './renderEngine';
 import type { TriggerState } from './scopeTypes';
 
 it('aligns to the most recent crossing with enough post-trigger samples', () => {
@@ -31,4 +31,24 @@ it('keeps CAL aligned for every packet phase instead of alternating with free-ru
     const signal = Array.from({length:4000},(_,i)=>(i+phase)%1000>=500 ? 1 : 0);
     expect(findTriggerIndex(signal,trigger,1e6,2000)).toBeGreaterThanOrEqual(500);
   }
+});
+
+it('ranges XY over all samples when X reverses direction', () => {
+  const plot = {width:500,batch:(fn:()=>void)=>fn(),setData:vi.fn(),setScale:vi.fn()};
+  const ctx = {plotRef:{current:plot},viewMode:'xy',mathRef:{current:{sourceA:'ch1',sourceB:'ch1'}},
+    phosphorEnabledRef:{current:false},plotThrottleRef:{current:0},forceTriggerRef:{current:null},chunkTimesRef:{current:[]}} as unknown as RenderCtx;
+  renderNow(ctx,[2,0,1,2],[0,0,0,0],1);
+  expect(plot.setScale).toHaveBeenCalledWith('x',expect.objectContaining({min:expect.any(Number),max:expect.any(Number)}));
+  const range=plot.setScale.mock.calls.find(([key])=>key==='x')![1];
+  expect(range.min).toBeLessThanOrEqual(0);
+  expect(range.max).toBeGreaterThanOrEqual(2);
+});
+
+it('draws XY sample pairs in acquisition order, including decreasing X', () => {
+  const points:number[][]=[];
+  vi.stubGlobal('Path2D',class {moveTo(x:number,y:number){points.push([x,y]);} lineTo(x:number,y:number){points.push([x,y]);}});
+  try {
+    xyPaths({data:[[2,0,1,2],[2,0,1,2]],valToPos:(v:number)=>v*10} as never,1,0,3);
+    expect(points).toEqual([[20,20],[0,0],[10,10],[20,20]]);
+  } finally {vi.unstubAllGlobals();}
 });

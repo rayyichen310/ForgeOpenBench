@@ -9,11 +9,12 @@ const schema: Record<string, unknown> = {
   sampleRate: SAMPLE_RATES_DSO.map(rate => rate.hz), phosphorEnabled: 'boolean', phosphorIntensity: 'nonnegative', phosphorTracesCount: 'positive',
 };
 
-export function validateScopePatch(patch: Record<string, unknown>): void {
+export function validateScopePatch(patch: Record<string, unknown>, complete = false): void {
   const validate = (value: unknown, rule: unknown, path: string): void => {
     if (Array.isArray(rule)) { if (!rule.includes(value)) throw new Error(`Unsupported ${path}`); return; }
     if (typeof rule === 'object' && rule !== null) {
       if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Invalid ${path}`);
+      if (complete && Object.keys(rule).some(key => !(key in value))) throw new Error(`Incomplete ${path}`);
       for (const [key, item] of Object.entries(value)) {
         if (!(key in rule)) throw new Error(`Unknown setting ${path}.${key}`);
         validate(item, (rule as Record<string, unknown>)[key], `${path}.${key}`);

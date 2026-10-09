@@ -193,6 +193,7 @@ export function makeDrawReference(deps: ReferenceDeps): (u: uPlot) => void {
 
 /* ── Cursors ────────────────────────────────────────────────────────── */
 export interface CursorDeps {
+  enabledRef: { current: boolean };
   cursorARef: { current: Cursor | null };
   cursorBRef: { current: Cursor | null };
 }
@@ -215,6 +216,7 @@ function drawCursorMarker(
 
 export function makeDrawCursors(deps: CursorDeps): (u: uPlot) => void {
   return (u) => {
+    if (!deps.enabledRef.current) return;
     const a = deps.cursorARef.current;
     const b = deps.cursorBRef.current;
     if (!a && !b) return;

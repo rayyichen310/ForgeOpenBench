@@ -25,6 +25,19 @@ export interface RenderCtx {
   renderRateT0Ref: { current: number };
 }
 
+// XY samples must retain acquisition order; uPlot's time-series path assumes ascending X.
+export const xyPaths: uPlot.Series.PathBuilder = (plot, series) => {
+  const xs = plot.data[0], ys = plot.data[series];
+  const stroke = new Path2D();
+  for (let i = 0; i < xs.length; i++) {
+    const x = plot.valToPos(xs[i], 'x', true);
+    const y = plot.valToPos(ys[i]!, 'y', true);
+    if (i === 0) stroke.moveTo(x, y);
+    else stroke.lineTo(x, y);
+  }
+  return {stroke};
+};
+
 export function findTriggerIndex(buf: number[], trigger: TriggerState, sampleRate: number, searchWindowSamples?: number): number {
   if (buf.length < 100) return -1;
   const level = trigger.level;
@@ -83,7 +96,18 @@ export function renderNow(
     const xs = new Float64Array(len);
     const ys = new Float64Array(len);
     for (let i = 0; i < len; i++) { xs[i] = a[i]; ys[i] = b[i]; }
-    plot.setData([xs, ys, new Float64Array(len), new Float64Array(len)]);
+    let xMin = xs[0], xMax = xs[0], yMin = ys[0], yMax = ys[0];
+    for (let i = 1; i < len; i++) {
+      xMin = Math.min(xMin, xs[i]); xMax = Math.max(xMax, xs[i]);
+      yMin = Math.min(yMin, ys[i]); yMax = Math.max(yMax, ys[i]);
+    }
+    const xPad = Math.max((xMax - xMin) * 0.05, 0.001);
+    const yPad = Math.max((yMax - yMin) * 0.05, 0.001);
+    plot.batch(() => {
+      plot.setData([xs, ys, new Float64Array(len), new Float64Array(len)]);
+      plot.setScale('x', {min:xMin-xPad,max:xMax+xPad});
+      plot.setScale('y', {min:yMin-yPad,max:yMax+yPad});
+    });
     if (ctx.phosphorEnabledRef.current) {
       const snap: TraceSnapshot = {
         mode: "xy",

@@ -41,6 +41,12 @@ $python = '.\.venv\Scripts\python.exe'
 ```
 
 Other actions: `autoset`, `force`, `clear`, `reference`. The view must be open.
+AutoSet selects Auto trigger and resumes acquisition to inspect fresh samples
+when stopped or single-held. Preset names are entered directly in the toolbar;
+the embedded browser does not need to support native JavaScript prompt dialogs.
+Preset Export opens editable JSON; Import JSON accepts pasted settings and validates
+the complete state before loading it. File download/import remain optional browser
+paths. Use the CLI for reliable CSV/PNG files in the local capture directory.
 `set` acknowledges a validated React state patch; hardware reconfiguration is
 asynchronous. Inspect status and the bridge log after changing hardware ranges
 or sample rate. Output files are created exclusively and never overwritten.
@@ -75,6 +81,7 @@ npm run build
 
 Regression tests cover stop RPC completion, trigger phase alignment, peak-detect
 timestamps, trigger-aligned averaging, single capture state, CSV columns, signal
-processing, scope patches, WinUSB frame layout, and control routing. Mock tests
+processing, scope patches, XY paths with reversing X, AutoSet after stopping,
+preset saving, WinUSB frame layout, and control routing. Mock tests
 do not substitute for real hardware tests. Other Forge plugins are outside this
 Windows scope repair and require their own device/platform validation.

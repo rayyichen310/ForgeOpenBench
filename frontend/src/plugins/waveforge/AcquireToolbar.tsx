@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { ScopePreset } from "./scopeTypes";
 
 interface Props {
@@ -22,10 +23,10 @@ interface Props {
   presets: ScopePreset[];
   selectedPreset: string | null;
   onSelectPreset: (name: string) => void;
-  onSavePreset: () => void;
+  onSavePreset: (name: string) => void;
   onLoadPreset: () => void;
   onDeletePreset: () => void;
-  onExportPresets: () => void;
+  onExportPresets: () => string;
   onImportPresets: (json: string) => void;
   onExportCsv: () => void;
   onExportPng: () => void;
@@ -43,8 +44,10 @@ export function AcquireToolbar({
   onExportPresets, onImportPresets, onExportCsv, onExportPng,
   onSetCursorA, onSetCursorB,
 }: Props) {
+  const [presetName, setPresetName] = useState('Setup');
+  const [presetJson, setPresetJson] = useState<string | null>(null);
   return (
-    <div className="flex items-center gap-2 px-3 py-1.5 border-b border-fob-border bg-fob-surface h-[44px] shrink-0 select-none">
+    <div className="flex flex-wrap items-center gap-2 px-3 py-1.5 border-b border-fob-border bg-fob-surface min-h-[44px] shrink-0 select-none">
       {/* Acquire buttons — hardware order */}
       <button
         onClick={onRun}
@@ -161,6 +164,9 @@ export function AcquireToolbar({
 
       {/* Preset manager */}
       <div className="flex items-center gap-1">
+        <input aria-label="Preset name" value={presetName} onChange={e => setPresetName(e.target.value)}
+          className="w-24 h-6 px-1 text-[11px] bg-fob-surface border border-fob-border rounded"
+        />
         <select
           value={selectedPreset ?? ""}
           onChange={(e) => onSelectPreset(e.target.value)}
@@ -172,7 +178,8 @@ export function AcquireToolbar({
           ))}
         </select>
         <button
-          onClick={onSavePreset}
+          onClick={() => onSavePreset(presetName)}
+          disabled={!presetName.trim()}
           className="px-2 py-1 rounded bg-fob-surface border border-fob-border text-fob-text font-bold text-[11px] hover:bg-fob-border transition-colors"
         >
           Save
@@ -192,14 +199,15 @@ export function AcquireToolbar({
           Del
         </button>
         <button
-          onClick={onExportPresets}
+          onClick={() => setPresetJson(onExportPresets())}
           disabled={presets.length === 0}
           className="px-2 py-1 rounded bg-fob-surface border border-fob-border text-fob-text font-bold text-[11px] hover:bg-fob-border disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
           Export
         </button>
+        <button onClick={() => setPresetJson('')} className="px-2 py-1 rounded border border-fob-border">Import JSON</button>
         <label className="px-2 py-1 rounded bg-fob-surface border border-fob-border text-fob-text font-bold text-[11px] hover:bg-fob-border transition-colors cursor-pointer">
-          Import
+          Import file
           <input
             type="file"
             accept=".json,application/json"
@@ -214,6 +222,22 @@ export function AcquireToolbar({
           />
         </label>
       </div>
+
+      {presetJson !== null && <div role="dialog" aria-label="Preset transfer" className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+        <div className="w-[90%] max-w-2xl p-4 rounded border border-fob-border bg-fob-surface">
+          <p className="mb-2">Preset JSON — copy to export, or paste and import.</p>
+          <textarea aria-label="Preset JSON" value={presetJson} onChange={e=>setPresetJson(e.target.value)}
+            className="w-full h-64 p-2 bg-fob-bg border border-fob-border select-text" />
+          <div className="flex gap-2 mt-2">
+            <button onClick={()=>{onImportPresets(presetJson);setPresetJson(null);}} className="px-3 py-1 rounded border border-fob-border">Import JSON</button>
+            <button onClick={()=>{
+              const url=URL.createObjectURL(new Blob([presetJson],{type:'application/json'}));
+              const link=document.createElement('a');link.href=url;link.download='scope-presets.json';link.click();URL.revokeObjectURL(url);
+            }} className="px-3 py-1 rounded border border-fob-border">Download file</button>
+            <button onClick={()=>setPresetJson(null)} className="px-3 py-1 rounded border border-fob-border">Close</button>
+          </div>
+        </div>
+      </div>}
 
       <div className="flex-1" />
 
