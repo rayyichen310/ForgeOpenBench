@@ -29,6 +29,12 @@ while the bridge is connected.
 
 ## CLI controlling the visible Scope view
 
+Run `./.venv/Scripts/python.exe server/usb-bridge/scope_cli.py --help` for the
+actions supported by this checkout. JSON patch examples are below; accepted
+values are validated in `frontend/src/plugins/waveforge/scopeSettings.ts`.
+The CLI sends commands to the open Scope over the loopback bridge rather than
+opening the USB device independently. Check `status` after configuration changes.
+
 ```powershell
 $python = '.\.venv\Scripts\python.exe'
 & $python server/usb-bridge/scope_cli.py status
