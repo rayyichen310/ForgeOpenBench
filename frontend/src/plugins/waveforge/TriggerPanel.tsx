@@ -22,8 +22,8 @@ export function TriggerPanel({ state, onChange, disabled, onSet50Percent }: Prop
         >
           <option value="ch1">CH1</option>
           <option value="ch2">CH2</option>
-          <option value="ext">Ext</option>
-          <option value="acline">AC Line</option>
+          <option value="ext" disabled>Ext (not available on 6022BL)</option>
+          <option value="acline" disabled>AC Line (not available on 6022BL)</option>
         </select>
       </div>
 
@@ -107,10 +107,10 @@ export function TriggerPanel({ state, onChange, disabled, onSet50Percent }: Prop
           onChange={(e) => onChange({ ...state, mode: e.target.value as TriggerState["mode"] })}
           disabled={disabled}
         >
-          <option value="smart">Auto</option>
+          <option value="smart">Smart</option>
           <option value="normal">Normal</option>
           <option value="single">Single</option>
-          <option value="auto">Free</option>
+          <option value="auto">Auto</option>
         </select>
       </div>
 
@@ -124,9 +124,9 @@ export function TriggerPanel({ state, onChange, disabled, onSet50Percent }: Prop
           disabled={disabled}
         >
           <option value="dc">DC</option>
-          <option value="ac">AC</option>
-          <option value="hfrej">HF Reject</option>
-          <option value="lfrej">LF Reject</option>
+          <option value="ac">AC (software)</option>
+          <option value="hfrej">HF Reject (50kHz software)</option>
+          <option value="lfrej">LF Reject (50kHz software)</option>
           <option value="noiserej">Noise Rej</option>
         </select>
       </div>

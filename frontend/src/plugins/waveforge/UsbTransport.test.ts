@@ -20,6 +20,18 @@ function buildBinaryFrame(
 }
 
 describe("UsbTransport", () => {
+  it("resolves the stop RPC even when its reply is also a stopped notification", () => {
+    const transport = new UsbTransport();
+    const resolve = vi.fn();
+    const stopped = vi.fn();
+    transport.onStopped(stopped);
+    const internals = transport as unknown as {pending: Map<string, unknown>; _handleMessage: (raw: string) => void};
+    internals.pending.set('stop1', {resolve, reject: vi.fn()});
+    internals._handleMessage(JSON.stringify({type: 'usb_stopped', req_id: 'stop1'}));
+    expect(resolve).toHaveBeenCalledOnce();
+    expect(internals.pending.has('stop1')).toBe(false);
+    expect(stopped).toHaveBeenCalledOnce();
+  });
   it("falls back to JSON usb_data messages from old bridges", () => {
     const transport = new UsbTransport();
     let received: UsbDataChunk | null = null;

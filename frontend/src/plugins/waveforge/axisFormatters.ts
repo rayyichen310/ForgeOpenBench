@@ -4,7 +4,7 @@ export function timeAxisValues(_u: uPlot, splits: number[]): string[] {
   const maxVal = Math.max(...splits.map(Math.abs));
   if (maxVal < 1e-6) return splits.map(v => `${(v * 1e9).toFixed(0)}ns`);
   if (maxVal < 1e-3) return splits.map(v => `${(v * 1e6).toFixed(1)}µs`);
-  if (maxVal < 1)    return splits.map(v => `${(v * 1e3).toFixed(0)}ms`);
+  if (maxVal < 1)    return splits.map(v => `${(v * 1e3).toFixed(maxVal < 0.01 ? 2 : 1)}ms`);
   return splits.map(v => `${v.toFixed(2)}s`);
 }
 

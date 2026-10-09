@@ -1,4 +1,5 @@
 import type { TraceSnapshot, TriggerState, HorizontalState } from "./scopeTypes";
+import { findTriggerIndex as findCompleteTrigger } from './renderEngine';
 
 export type AcquireMode = "stopped" | "running" | "single-armed" | "single-held" | "rolling" | "averaging";
 
@@ -16,6 +17,7 @@ export interface AcquireCtx {
   sampleRateRef: { current: number };
   plotThrottleRef: { current: number };
   triggerArmedRef: { current: boolean };
+  lastTriggerAtRef: { current: number };
   smartStateRef: { current: "auto" | "locked" };
   smartTriggerCountRef: { current: number };
   smartMissCountRef: { current: number };
@@ -31,7 +33,7 @@ export interface AcquireCtx {
   renderNow: (ch1: number[], ch2: number[], opts?: { phosphorOnly?: boolean }) => void;
   setAcquireMode: (mode: AcquireMode) => void;
   setTriggerLevel: (level: number) => void;
-  stop: (intentional?: boolean) => void;
+  stop: (intentional?: boolean) => void | Promise<void>;
 }
 
 export function findTriggerIndex(buf: number[], trigger: TriggerState, sampleRate: number, windowMs: number): number {
@@ -45,6 +47,7 @@ export function findTriggerIndex(buf: number[], trigger: TriggerState, sampleRat
   // not a stale trigger that is still present earlier in the rolling buffer.
   for (let i = buf.length - 1; i > checkStart; i--) {
     const prev = buf[i - 1], curr = buf[i];
+    if (trigger.coupling === 'noiserej' && Math.abs(curr - prev) < 0.02) continue;
     if (slope === "rise" && prev <= level && curr > level) return i;
     if (slope === "fall" && prev >= level && curr < level) return i;
     if (slope === "both" && ((prev <= level && curr > level) || (prev >= level && curr < level))) return i;
@@ -68,25 +71,29 @@ export function findTriggerTime(buf: number[], trigger: TriggerState, sampleRate
 }
 
 export function handleAcquireMode(ctx: AcquireCtx): void {
-  if (ctx.mode === "single-armed") {
+  if (ctx.triggerRef.current.mode !== "auto" && ctx.nowPerf - ctx.lastTriggerAtRef.current < ctx.triggerRef.current.holdoff * 1000) return;
+  if (detectTrigger(ctx.sourceBuf, ctx.triggerRef.current, ctx.sampleRateRef.current, ctx.windowMs)) ctx.lastTriggerAtRef.current = ctx.nowPerf;
+  if (ctx.mode === "single-armed" || ctx.triggerRef.current.mode === 'single') {
     if (detectTrigger(ctx.sourceBuf, ctx.triggerRef.current, ctx.sampleRateRef.current, ctx.windowMs)) {
-      ctx.setAcquireMode("single-held");
       ctx.renderNow(ctx.ch1Buf, ctx.ch2Buf);
-      void ctx.stop(true);
+      void Promise.resolve(ctx.stop(true)).then(() => ctx.setAcquireMode("single-held"));
     }
     return;
   }
 
   if (ctx.mode === "averaging") {
-    if (detectTrigger(ctx.sourceBuf, ctx.triggerRef.current, ctx.sampleRateRef.current, ctx.windowMs)) {
-      const n = ctx.ch1Buf.length;
-      if (ctx.avgAccumCountRef.current === 0) {
+    const n = Math.max(100, Math.ceil(ctx.windowMs / 1000 * ctx.sampleRateRef.current));
+    const index = findCompleteTrigger(ctx.sourceBuf, ctx.triggerRef.current, ctx.sampleRateRef.current, n);
+    if (index >= Math.floor(n * 0.25) && ctx.sourceBuf.length - index >= Math.ceil(n * 0.75)) {
+      const start = index - Math.floor(n * 0.25);
+      if (ctx.avgAccumCountRef.current === 0 || ctx.avgBuf1Ref.current.length !== n) {
+        ctx.avgAccumCountRef.current = 0;
         ctx.avgBuf1Ref.current = new Array(n).fill(0);
         ctx.avgBuf2Ref.current = new Array(n).fill(0);
       }
       for (let i = 0; i < n; i++) {
-        ctx.avgBuf1Ref.current[i] += ctx.ch1Buf[i];
-        ctx.avgBuf2Ref.current[i] += ctx.ch2Buf[i];
+        ctx.avgBuf1Ref.current[i] += ctx.ch1Buf[start + i];
+        ctx.avgBuf2Ref.current[i] += ctx.ch2Buf[start + i];
       }
       ctx.avgAccumCountRef.current++;
       const targetCount = ctx.horizontalRef.current.averageCount;
@@ -162,28 +169,12 @@ export function handleAcquireMode(ctx: AcquireCtx): void {
       ctx.triggerArmedRef.current = true;
     } else if (tmode === "normal") {
       const triggered = detectTrigger(ctx.sourceBuf, ctx.triggerRef.current, ctx.sampleRateRef.current, ctx.windowMs);
-      if (triggered && ctx.triggerArmedRef.current) {
+      if (triggered) {
         ctx.renderNow(ctx.ch1Buf, ctx.ch2Buf);
         ctx.triggerArmedRef.current = false;
         ctx.normalMissCountRef.current = 0;
       } else {
         ctx.normalMissCountRef.current++;
-      }
-      // Auto-level if the signal hasn't triggered for a while; this prevents
-      // the display from freezing on the old waveform when the user swaps signals.
-      const timeSinceAutoLevel = ctx.nowPerf - ctx.lastAutoLevelT0Ref.current;
-      if (ctx.normalMissCountRef.current > 10 && timeSinceAutoLevel > 1000 && ctx.sourceBuf.length > 100) {
-        let min = ctx.sourceBuf[0], max = ctx.sourceBuf[0];
-        for (const v of ctx.sourceBuf) {
-          if (v < min) min = v;
-          if (v > max) max = v;
-        }
-        const mid = (min + max) / 2;
-        if (Math.abs(mid - ctx.triggerRef.current.level) > 0.05) {
-          ctx.setTriggerLevel(mid);
-        }
-        ctx.normalMissCountRef.current = 0;
-        ctx.lastAutoLevelT0Ref.current = ctx.nowPerf;
       }
       if (!ctx.triggerArmedRef.current && ctx.sourceBuf.length > 0) {
         const last = ctx.sourceBuf[ctx.sourceBuf.length - 1];

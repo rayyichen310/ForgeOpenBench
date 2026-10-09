@@ -1,7 +1,7 @@
 import type uPlot from "uplot";
 import type { TraceSnapshot, MathState, HorizontalState, TriggerState, VerticalState } from "./scopeTypes";
 import { fftMagnitude } from "./fftEngine";
-import { findTriggerTime } from "./acquireModes";
+import { triggerSamples } from "./scopeProcessing";
 import { MAX_PHOSPHOR_TRACES } from "./canvasOverlays";
 
 export interface RenderCtx {
@@ -32,9 +32,11 @@ export function findTriggerIndex(buf: number[], trigger: TriggerState, sampleRat
   const sr = sampleRate || 4_000_000;
   const defaultWindow = Math.max(500, Math.ceil(sr * 0.001));
   const windowSamples = searchWindowSamples ? Math.max(100, searchWindowSamples) : defaultWindow;
-  const checkStart = Math.max(0, buf.length - windowSamples);
-  for (let i = buf.length - 1; i > checkStart; i--) {
+  const checkStart = Math.max(Math.floor(windowSamples * 0.25) - 1, buf.length - windowSamples * 2);
+  const postTrigger = Math.ceil(windowSamples * 0.75);
+  for (let i = buf.length - postTrigger; i > checkStart; i--) {
     const prev = buf[i - 1], curr = buf[i];
+    if (trigger.coupling === "noiserej" && Math.abs(curr - prev) < 0.02) continue;
     if (slope === "rise" && prev <= level && curr > level) return i;
     if (slope === "fall" && prev >= level && curr < level) return i;
     if (slope === "both" && ((prev <= level && curr > level) || (prev >= level && curr < level))) return i;
@@ -57,7 +59,6 @@ export function renderNow(
   const renderT0 = performance.now();
   const lastChunkT = ctx.chunkTimesRef.current.length > 0 ? ctx.chunkTimesRef.current[ctx.chunkTimesRef.current.length - 1] : renderT0;
   const e2eLatency = renderT0 - lastChunkT;
-  const n = ch1.length;
   const width = plot.width ?? 1000;
   const target = Math.max(1000, width * 2);
   const vm = ctx.viewMode;
@@ -101,21 +102,7 @@ export function renderNow(
   // time mode
   const dt = 1 / (ctx.sampleRateRef.current || 4_000_000);
   const isPeak = ctx.horizontalRef.current.acquireMode === "peak";
-  let r1 = ch1, r2 = ch2;
-  if (isPeak && n > target) {
-    const step = Math.floor(n / target);
-    r1 = []; r2 = [];
-    for (let i = 0; i < n; i += step) {
-      const end = Math.min(i + step, n);
-      let min1 = ch1[i], max1 = ch1[i];
-      let min2 = ch2[i], max2 = ch2[i];
-      for (let j = i + 1; j < end; j++) {
-        if (ch1[j] < min1) min1 = ch1[j]; if (ch1[j] > max1) max1 = ch1[j];
-        if (ch2[j] < min2) min2 = ch2[j]; if (ch2[j] > max2) max2 = ch2[j];
-      }
-      r1.push(min1, max1); r2.push(min2, max2);
-    }
-  }
+  const r1 = ch1, r2 = ch2;
   const rn = r1.length;
 
   const doMath = ctx.mathRef.current.enabled && ctx.mathRef.current.op !== "fft" && ctx.mathRef.current.op !== "xy";
@@ -133,7 +120,7 @@ export function renderNow(
     }
   }
 
-  const tSrc = ctx.triggerRef.current.source === "ch2" ? r2 : r1;
+  const tSrc = triggerSamples(ctx.triggerRef.current.source === "ch2" ? r2 : r1, ctx.triggerRef.current.coupling, ctx.sampleRateRef.current);
   const sr = ctx.sampleRateRef.current || 4_000_000;
   const fullWindowSamples = Math.max(100, Math.ceil(ctx.windowMs / 1000 * sr));
   const rollMode = ctx.horizontalRef.current.rollMode;
@@ -145,7 +132,7 @@ export function renderNow(
     console.log(`[DSO] live window: ${liveWindowMs}ms / ${liveWindowSamples} samples, full: ${ctx.windowMs}ms / ${fullWindowSamples} samples, roll=${rollMode}`);
   }
   const tIdx = rollMode ? -1 : findTriggerIndex(tSrc, ctx.triggerRef.current, ctx.sampleRateRef.current, liveWindowSamples);
-  const alignTrigger = !rollMode && tIdx >= 0 && rn > liveWindowSamples;
+  const alignTrigger = !rollMode && tIdx >= 0 && rn >= liveWindowSamples;
   let triggerTime = -1;
   let s1 = r1, s2 = r2, sM = mathArr;
   let startIdx = 0;
@@ -157,7 +144,8 @@ export function renderNow(
     s1 = r1.slice(startIdx, endIdx);
     s2 = r2.slice(startIdx, endIdx);
     sM = mathArr.slice(startIdx, endIdx);
-    triggerTime = findTriggerTime(tSrc, ctx.triggerRef.current, sr, ctx.windowMs);
+    const fraction = (ctx.triggerRef.current.level - tSrc[tIdx - 1]) / (tSrc[tIdx] - tSrc[tIdx - 1]);
+    triggerTime = (tIdx - 1 + fraction) * dt;
   } else if (rn > liveWindowSamples) {
     // No trigger found: show the latest live data instead of the oldest full-window data
     startIdx = rn - liveWindowSamples;
@@ -194,45 +182,61 @@ export function renderNow(
   const step = doDecimate ? Math.floor(sn / target) : 1;
   const m = doDecimate ? Math.ceil(sn / step) : sn;
   let xs: Float64Array, ys1Arr: Float64Array, ys2Arr: Float64Array, ysMArr: Float64Array;
-  if (!doDecimate) {
-    xs = Float64Array.from({ length: sn }, (_, i) => (startIdx + i) * dt);
-    ys1Arr = new Float64Array(s1); ys2Arr = new Float64Array(s2); ysMArr = new Float64Array(sM);
-    plot.setData([xs, ys1Arr, ys2Arr, ysMArr]);
-  } else {
-    xs = new Float64Array(m); ys1Arr = new Float64Array(m); ys2Arr = new Float64Array(m); ysMArr = new Float64Array(m);
-    for (let i = 0, j = 0; i < sn; i += step, j++) {
-      xs[j] = (startIdx + i) * dt; ys1Arr[j] = s1[i]; ys2Arr[j] = s2[i]; ysMArr[j] = sM[i];
+  plot.batch(() => {
+    if (isPeak && sn > target) {
+      // Compress the display after triggering, retaining each bin's actual time bounds.
+      const binSize = Math.ceil(sn / target) * 2;
+      const times: number[] = [], channels: number[][] = [[], [], []];
+      for (let i = 0; i < sn; i += binSize) {
+        const end = Math.min(sn, i + binSize);
+        times.push((startIdx + i) * dt, (startIdx + end - 1) * dt);
+        [s1, s2, sM].forEach((values, channel) => {
+          let min = values[i], max = values[i];
+          for (let j = i + 1; j < end; j++) { min = Math.min(min, values[j]); max = Math.max(max, values[j]); }
+          channels[channel].push(min, max);
+        });
+      }
+      plot.setData([new Float64Array(times), ...channels.map(values => new Float64Array(values))] as uPlot.AlignedData);
+    } else if (!doDecimate) {
+      xs = Float64Array.from({ length: sn }, (_, i) => (startIdx + i) * dt);
+      ys1Arr = new Float64Array(s1); ys2Arr = new Float64Array(s2); ysMArr = new Float64Array(sM);
+      plot.setData([xs, ys1Arr, ys2Arr, ysMArr]);
+    } else {
+      xs = new Float64Array(m); ys1Arr = new Float64Array(m); ys2Arr = new Float64Array(m); ysMArr = new Float64Array(m);
+      for (let i = 0, j = 0; i < sn; i += step, j++) {
+        xs[j] = (startIdx + i) * dt; ys1Arr[j] = s1[i]; ys2Arr[j] = s2[i]; ysMArr[j] = sM[i];
+      }
+      plot.setData([xs, ys1Arr, ys2Arr, ysMArr]);
     }
-    plot.setData([xs, ys1Arr, ys2Arr, ysMArr]);
-  }
-  // Overview: always show the full capture window, not just the live slice
-  const ov = ctx.overviewPlotRef.current;
-  if (ov) {
-    const ovLen = rn - fullStartIdx;
-    const xsOv = Float64Array.from({ length: ovLen }, (_, i) => (fullStartIdx + i) * dt);
-    ov.setData([xsOv, new Float64Array(r1.slice(fullStartIdx)), new Float64Array(r2.slice(fullStartIdx)), new Float64Array(mathArr.slice(fullStartIdx))]);
-  }
-  // Force scale during acquisition
-  const posOffset = (ctx.triggerRef.current.source === "ch2"
-    ? ctx.ch2VerticalRef.current.position * ctx.ch2VerticalRef.current.vDiv
-    : ctx.ch1VerticalRef.current.position * ctx.ch1VerticalRef.current.vDiv);
-  const yRange = ctx.ch1VerticalRef.current.vDiv * 10;
-  const yMin = -yRange / 2 + posOffset;
-  const yMax = yRange / 2 + posOffset;
-  let dataMin: number;
-  let dataMax: number;
-  if (alignTrigger && triggerTime >= 0) {
-    const windowSize = liveWindowSamples * dt;
-    dataMin = triggerTime - windowSize * 0.25;
-    dataMax = triggerTime + windowSize * 0.75;
-  } else {
-    dataMin = sn > 0 ? startIdx * dt : 0;
-    dataMax = sn > 0 ? (startIdx + (m - 1) * step) * dt : 0;
-  }
-  const range = dataMax - dataMin;
-  const delay = (ctx.horizontalRef.current.position / 100) * range;
-  plot.setScale('x', { min: dataMin + delay, max: dataMax + delay });
-  plot.setScale('y', { min: yMin, max: yMax });
+    // Overview: always show the full capture window, not just the live slice
+    const ov = ctx.overviewPlotRef.current;
+    if (ov) {
+      const ovLen = rn - fullStartIdx;
+      const xsOv = Float64Array.from({ length: ovLen }, (_, i) => (fullStartIdx + i) * dt);
+      ov.setData([xsOv, new Float64Array(r1.slice(fullStartIdx)), new Float64Array(r2.slice(fullStartIdx)), new Float64Array(mathArr.slice(fullStartIdx))]);
+    }
+    // Force scale during acquisition
+    const posOffset = (ctx.triggerRef.current.source === "ch2"
+      ? ctx.ch2VerticalRef.current.position * ctx.ch2VerticalRef.current.vDiv
+      : ctx.ch1VerticalRef.current.position * ctx.ch1VerticalRef.current.vDiv);
+    const yRange = ctx.ch1VerticalRef.current.vDiv * 10;
+    const yMin = -yRange / 2 + posOffset;
+    const yMax = yRange / 2 + posOffset;
+    let dataMin: number;
+    let dataMax: number;
+    if (alignTrigger && triggerTime >= 0) {
+      const windowSize = liveWindowSamples * dt;
+      dataMin = triggerTime - windowSize * 0.25;
+      dataMax = triggerTime + windowSize * 0.75;
+    } else {
+      dataMin = sn > 0 ? startIdx * dt : 0;
+      dataMax = sn > 0 ? (startIdx + (m - 1) * step) * dt : 0;
+    }
+    const range = dataMax - dataMin;
+    const delay = (ctx.horizontalRef.current.position / 100) * range;
+    plot.setScale('x', { min: dataMin + delay, max: dataMax + delay });
+    plot.setScale('y', { min: yMin, max: yMax });
+  });
 
   // Render-rate diagnostics
   ctx.renderCountRef.current++;

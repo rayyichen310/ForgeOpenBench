@@ -42,11 +42,11 @@ export function formatSDiv(s: number): string {
 export function vDivToVpp(vDiv: number): number {
   const targetVpp = vDiv * 10; // 10 divisions vertically
   // Pick smallest hardware range that covers target
-  const hwRanges = [10.0, 5.0, 2.0, 1.0];
+  const hwRanges = [1.0, 2.0, 5.0, 10.0];
   for (const r of hwRanges) {
     if (r >= targetVpp) return r;
   }
-  return hwRanges[0];
+  return hwRanges[hwRanges.length - 1];
 }
 
 // Map s/div to window duration in ms (10 divisions horizontally)

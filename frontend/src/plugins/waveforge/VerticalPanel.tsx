@@ -133,7 +133,7 @@ function ChannelControls({
                 disabled={disabled}
                 className={accent}
               />
-              BW20
+              LPF20MHz
             </label>
           </div>
         </>

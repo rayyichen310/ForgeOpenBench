@@ -5,9 +5,7 @@ import asyncio
 import json
 import base64
 import datetime
-import fcntl
 import struct
-import termios
 import zipfile
 import mimetypes
 from pathlib import Path
@@ -167,6 +165,11 @@ async def terminal_websocket(websocket: WebSocket):
     Spawns a local bash shell and proxies raw bytes between the PTY and the client.
     Restricted to loopback connections only (127.0.0.1 / ::1).
     """
+    if os.name == "nt":
+        await websocket.close(code=1011, reason="Windows terminal support is not installed")
+        return
+    import fcntl
+    import termios
     client_host = websocket.client.host if websocket.client else None
     if client_host not in ("127.0.0.1", "::1"):
         await websocket.close(code=1008)

@@ -36,6 +36,8 @@ export class UsbTransport implements IUsbTransport {
   private _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private _deviceInfo: UsbDeviceInfo | null = null;
   private _binaryLa = false;
+  private _scopeHandler: ((action: string, params: Record<string, unknown>) => Promise<unknown>) | null = null;
+  private _lastSequence = 0;
 
   get isConnected(): boolean { return this._connected; }
   get deviceInfo(): UsbDeviceInfo | null { return this._deviceInfo; }
@@ -75,6 +77,7 @@ export class UsbTransport implements IUsbTransport {
     this.ws.onopen = () => {
       this._reconnectDelay = RECONNECT_BASE_MS;
       this._connected = true;
+      if (this._scopeHandler) void this._rpc("scope_register");
       this.listeners.forEach((l) => l(true));
     };
 
@@ -121,6 +124,14 @@ export class UsbTransport implements IUsbTransport {
 
     const type = msg.type as string;
 
+    if (type === "scope_control") {
+      const reply = (payload: Record<string, unknown>) => this.ws?.send(JSON.stringify({type: "scope_result", command_id: msg.command_id, ...payload}));
+      if (!this._scopeHandler) { reply({error: "Scope view is inactive"}); return; }
+      void this._scopeHandler(msg.action as string, msg.params as Record<string, unknown>)
+        .then(result => reply({result})).catch(error => reply({error: String(error)}));
+      return;
+    }
+
     if (type === "usb_data") {
       const chunk = msg as unknown as UsbDataChunk;
       this.dataHandlers.forEach(h => h(chunk));
@@ -129,7 +140,7 @@ export class UsbTransport implements IUsbTransport {
 
     if (type === "usb_stopped") {
       this.stopHandlers.forEach(h => h());
-      return;
+      if (!msg.req_id) return;
     }
 
     const reqId = msg.req_id as string | undefined;
@@ -198,7 +209,11 @@ export class UsbTransport implements IUsbTransport {
       b64: "", // not used in binary mode
       data,
     };
-    this.dataHandlers.forEach(h => h(chunk));
+    const sequence = reserved >>> 8;
+    chunk.discontinuous = !isLa && sequence > 0 && this._lastSequence > 0 && sequence !== this._lastSequence + 1;
+    this._lastSequence = sequence;
+    try { this.dataHandlers.forEach(h => h(chunk)); }
+    finally { if (!isLa && sequence > 0) this.ws?.send(JSON.stringify({type: "usb_frame_ack"})); }
   }
 
   private _rejectAllPending(): void {
@@ -267,6 +282,12 @@ export class UsbTransport implements IUsbTransport {
   onData(handler: UsbDataHandler): () => void {
     this.dataHandlers.add(handler);
     return () => { this.dataHandlers.delete(handler); };
+  }
+
+  registerScope(handler: (action: string, params: Record<string, unknown>) => Promise<unknown>): () => void {
+    this._scopeHandler = handler;
+    if (this.isConnected) void this._rpc("scope_register");
+    return () => { this._scopeHandler = null; };
   }
 
   onStopped(handler: () => void): () => void {

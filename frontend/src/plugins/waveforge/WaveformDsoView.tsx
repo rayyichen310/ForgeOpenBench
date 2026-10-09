@@ -28,7 +28,9 @@ import {
   notifyPresetsImported, notifyPresetDeleted, notifyError,
 } from "./scopeToasts";
 import { loadPresets, savePresets, createPreset, uniquePresetName, exportPresets, importPresets } from "./scopePresets";
-import { exportTraceCsv, exportPlotPng } from "./scopeExport";
+import { exportTraceCsv, exportPlotPng, traceCsv } from "./scopeExport";
+import { processChannel, triggerSamples } from "./scopeProcessing";
+import { validateScopePatch } from "./scopeSettings";
 
 /* ── Props ─────────────────────────────────────────────────────────── */
 interface Props {
@@ -68,6 +70,10 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
   // Data refs
   // TypeScript 6.0 + @types/react 19 infer function-typed refs as `never`; use any as a workaround.
   const dataOffRef = useRef<any>(null);
+  const pushDataRef = useRef<(chunk: UsbDataChunk) => void>(() => {});
+  const scopeControlRef = useRef<(action: string, params: Record<string, unknown>) => Promise<unknown>>(async () => { throw new Error('Scope view not ready'); });
+  useEffect(() => transport.registerScope((action, params) => scopeControlRef.current(action, params)), [transport]);
+  useEffect(() => () => { dataOffRef.current?.(); dataOffRef.current = null; }, []);
   const ch1Buf = useRef<number[]>([]);
   const ch2Buf = useRef<number[]>([]);
   const mathBuf = useRef<number[]>([]);
@@ -97,6 +103,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
   const singleArmedRef = useRef(false);
   const singleJustTriggeredRef = useRef(false);
   const triggerArmedRef = useRef(true); // for Normal mode: re-arm after signal leaves trigger zone
+  const lastTriggerAtRef = useRef(-Infinity);
   // Smart trigger state machine
   const smartStateRef = useRef<"auto" | "locked">("auto");
   const smartTriggerCountRef = useRef(0); // consecutive triggered evaluations in auto sub-state
@@ -109,7 +116,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
     pausedRef.current = false;
     singleArmedRef.current = mode === "single-armed";
     singleJustTriggeredRef.current = false;
-  });
+  }, [acquireMode]);
 
   // Load persisted state once on mount
   const persisted = useRef(loadScopeState()).current;
@@ -223,6 +230,8 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
 
   // Derived values for backend
   const vpp = vDivToVpp(ch1Vertical.vDiv);
+  const inputVpp1 = vDivToVpp(ch1Vertical.vDiv / ch1Vertical.probe);
+  const inputVpp2 = vDivToVpp(ch2Vertical.vDiv / ch2Vertical.probe);
   const windowMs = sDivToWindowMs(horizontal.sDiv);
 
   // Refs for async handlers
@@ -265,13 +274,15 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
         try {
           await transport.configure({
             mode: "dso",
-            sample_rate_hz: sampleRate,
+            sample_rate_hz: sampleRateRef.current,
             sample_width: 8,
-            voltage_range: vpp,
+            voltage_range: vDivToVpp(ch1VerticalRef.current.vDiv / ch1VerticalRef.current.probe),
+            voltage_range_ch2: vDivToVpp(ch2VerticalRef.current.vDiv / ch2VerticalRef.current.probe),
           });
-          dataOffRef.current = transport.onData(pushData);
+          dataOffRef.current = transport.onData(chunk => pushDataRef.current(chunk));
           await transport.start();
           runningRef.current = true;
+          setAcquireMode(horizontalRef.current.rollMode ? 'rolling' : horizontalRef.current.acquireMode === 'average' ? 'averaging' : 'running');
           intentionalStopRef.current = false;
         } catch (e) {
           runningRef.current = false;
@@ -285,7 +296,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
       })();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sampleRate]);
+  }, [sampleRate, inputVpp1, inputVpp2]);
   // Clear phosphor history when trigger mode changes — old ghosts don't match new mode behavior
   useEffect(() => {
     phosphorTraces.current = [];
@@ -371,7 +382,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
       opts = {
         width: W, height: H,
         padding: [0, 0, 0, 0],
-        scales: { x: { auto: true }, y: { auto: true } },
+        scales: { x: { auto: true, time: false }, y: { auto: true } },
         axes: [
           { stroke: "#666688", grid: { stroke: "#1A1A2E" }, label: vpp < 2 ? "mV" : "V", values: voltAxisValues },
           { stroke: "#666688", grid: { stroke: "#1A1A2E" }, label: vpp < 2 ? "mV" : "V", values: voltAxisValues },
@@ -730,26 +741,18 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
   const totalBytes = useRef(0);
   const dataAgeT0 = useRef(0);
   const pushData = useCallback((chunk: UsbDataChunk) => {
+    if (chunk.discontinuous) {
+      ch1Buf.current = []; ch2Buf.current = [];
+      filtRing1.current = []; filtRing2.current = [];
+    }
     const bytes = chunk.data ?? Uint8Array.from(atob(chunk.b64), c => c.charCodeAt(0));
-    const gain = vpp / 256;
+    const gain1 = vDivToVpp(ch1VerticalRef.current.vDiv / ch1VerticalRef.current.probe) / 256;
+    const gain2 = vDivToVpp(ch2VerticalRef.current.vDiv / ch2VerticalRef.current.probe) / 256;
     const chunkT0 = performance.now();
 
     for (let i = 0; i + 1 < bytes.length; i += 2) {
-      let v1 = (bytes[i]   - 128) * gain * ch1VerticalRef.current.probe;
-      let v2 = (bytes[i+1] - 128) * gain * ch2VerticalRef.current.probe;
-
-      if (ch1VerticalRef.current.invert) v1 = -v1;
-      if (ch2VerticalRef.current.invert) v2 = -v2;
-
-      // BW limit: simple exponential moving average (digital LPF)
-      if (ch1VerticalRef.current.bwLimit) {
-        const alpha = 0.3; // ~20MHz equivalent at 4MS/s
-        v1 = filtRing1.current.length > 0 ? alpha * v1 + (1 - alpha) * filtRing1.current[filtRing1.current.length - 1] : v1;
-      }
-      if (ch2VerticalRef.current.bwLimit) {
-        const alpha = 0.3;
-        v2 = filtRing2.current.length > 0 ? alpha * v2 + (1 - alpha) * filtRing2.current[filtRing2.current.length - 1] : v2;
-      }
+      let v1 = (bytes[i]   - 128) * gain1 * ch1VerticalRef.current.probe;
+      let v2 = (bytes[i+1] - 128) * gain2 * ch2VerticalRef.current.probe;
 
       ch1Buf.current.push(v1);
       ch2Buf.current.push(v2);
@@ -766,20 +769,21 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
     // Window trim
     const dt = 1 / chunk.rate;
     const MAX_SAMPLES = 200_000;
-    const maxSamples = Math.min(Math.ceil(windowMs / 1000 / dt), MAX_SAMPLES);
+    const maxSamples = Math.min(Math.ceil(windowMs / 1000 / dt) * 2, MAX_SAMPLES);
     if (ch1Buf.current.length > maxSamples) {
       ch1Buf.current = ch1Buf.current.slice(-maxSamples);
       ch2Buf.current = ch2Buf.current.slice(-maxSamples);
     }
 
     // Measurements (throttled ~5Hz)
-    const m1 = calcMeasurements(ch1Buf.current, chunk.rate);
-    const m2 = calcMeasurements(ch2Buf.current, chunk.rate);
+    const v1 = ch1VerticalRef.current, v2 = ch2VerticalRef.current;
+    const channel1 = processChannel(ch1Buf.current, v1.coupling, v1.invert, v1.bwLimit, chunk.rate);
+    const channel2 = processChannel(ch2Buf.current, v2.coupling, v2.invert, v2.bwLimit, chunk.rate);
     const now = Date.now();
     if (now - measThrottleRef.current > 200) {
       measThrottleRef.current = now;
-      setCh1Meas(m1);
-      setCh2Meas(m2);
+      setCh1Meas(calcMeasurements(channel1, chunk.rate));
+      setCh2Meas(calcMeasurements(channel2, chunk.rate));
     }
 
     // ── Mode-aware render decision ────────────────────────────────────
@@ -804,7 +808,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
     // Trigger detection helper — returns crossing index or -1
     const renderCtx = {
       plotRef, overviewPlotRef,
-      viewMode: viewMode as "time" | "fft" | "xy",
+      viewMode: (mathRef.current.enabled && mathRef.current.op === 'fft' ? 'fft' : mathRef.current.enabled && mathRef.current.op === 'xy' ? 'xy' : 'time') as "time" | "fft" | "xy",
       sampleRateRef, mathRef, phosphorEnabledRef,
       horizontalRef, triggerRef,
       ch1VerticalRef, ch2VerticalRef, windowMs,
@@ -812,13 +816,13 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
       chunkTimesRef: chunkTimes, renderCountRef: renderCount,
       renderRateT0Ref: renderRateT0,
     };
-    const sourceBuf = triggerRef.current.source === "ch2" ? ch2Buf.current : ch1Buf.current;
+    const sourceBuf = triggerSamples(triggerRef.current.source === "ch2" ? channel2 : channel1, triggerRef.current.coupling, chunk.rate);
 
     handleAcquireMode({
       mode,
       sourceBuf,
-      ch1Buf: ch1Buf.current,
-      ch2Buf: ch2Buf.current,
+      ch1Buf: channel1,
+      ch2Buf: channel2,
       nowPerf,
       vpp,
       windowMs,
@@ -827,6 +831,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
       sampleRateRef,
       plotThrottleRef,
       triggerArmedRef,
+      lastTriggerAtRef,
       smartStateRef,
       smartTriggerCountRef,
       smartMissCountRef,
@@ -844,6 +849,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
       stop,
     });
   }, [vpp, windowMs]);
+  useEffect(() => { pushDataRef.current = pushData; }, [pushData]);
 
   // Start / stop
   const start = useCallback(async () => {
@@ -857,7 +863,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
     // Just resume state without re-configuring (avoids disruption on spurious usb_stopped).
     if (dataOffRef.current) {
       runningRef.current = true;
-      setAcquireMode("running");
+      setAcquireMode(horizontalRef.current.rollMode ? 'rolling' : horizontalRef.current.acquireMode === 'average' ? 'averaging' : 'running');
       return;
     }
     ch1Buf.current = [];
@@ -876,13 +882,14 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
         mode: "dso",
         sample_rate_hz: sampleRateRef.current,
         sample_width: 8,
-        voltage_range: vpp,
+        voltage_range: inputVpp1,
+        voltage_range_ch2: inputVpp2,
       });
       dataOffRef.current?.();
-      dataOffRef.current = transport.onData(pushData);
+      dataOffRef.current = transport.onData(chunk => pushDataRef.current(chunk));
       await transport.start();
       runningRef.current = true;
-      setAcquireMode("running");
+      setAcquireMode(horizontalRef.current.rollMode ? 'rolling' : horizontalRef.current.acquireMode === 'average' ? 'averaging' : 'running');
     } catch (e) {
       runningRef.current = false;
       setAcquireMode("stopped");
@@ -894,7 +901,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
       notifyError(`Start failed: ${msg}`);
       console.warn("[DSO] start error", e);
     }
-  }, [connected, transport, pushData, vpp]);
+  }, [connected, transport, pushData, inputVpp1, inputVpp2]);
 
   const stop = useCallback(async (intentional = false) => {
     intentionalStopRef.current = intentional;
@@ -953,10 +960,11 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
   // Toolbar handlers
   const handleRun = () => { notifyStarted(); void start(); };
   const handleStop = () => { notifyStopped(); void stop(true); };
-  const handleSingle = () => {
+  const handleSingle = async () => {
     notifySingle();
+    await stop(true);
+    await start();
     setAcquireMode("single-armed");
-    void start();
   };
   const handleAutoSet = async () => {
     const result = autoset(ch1Buf.current, ch2Buf.current, sampleRate, VDIV_STEPS, SDIV_STEPS);
@@ -1146,10 +1154,11 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
   };
 
   const handleExportCsv = () => {
-    const names = ["CH1"];
-    if (ch2Vertical.enabled) names.push("CH2");
-    if (math.enabled) names.push("MATH");
-    exportTraceCsv(plotRef.current, names, viewMode);
+    const names = viewMode === "fft" ? ["FFT(V)"] : viewMode === "xy" ? ["Y(V)"] : ["CH1(V)"];
+    const indices = [1];
+    if (viewMode === "time" && ch2Vertical.enabled) { names.push("CH2(V)"); indices.push(2); }
+    if (viewMode === "time" && math.enabled) { names.push("MATH"); indices.push(3); }
+    exportTraceCsv(plotRef.current, names, viewMode, indices);
   };
 
   const handleExportPng = () => {
@@ -1172,13 +1181,53 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
   const handleSetCursorA = () => setCursorAtCenter(setCursorA);
   const handleSetCursorB = () => setCursorAtCenter(setCursorB);
 
+  scopeControlRef.current = async (action, params) => {
+    const status = () => ({connected, acquireMode: acquireModeRef.current, sampleRate, ch1Vertical, ch2Vertical,
+      horizontal, trigger, math, phosphorEnabled, ch1Meas, ch2Meas, samples: ch1Buf.current.length});
+    if (action === 'status') return status();
+    if (action === 'set') {
+      validateScopePatch(params);
+      const patch = params as Partial<ScopePreset['state']>;
+      if (patch.ch1Vertical) setCh1Vertical(prev => ({...prev, ...patch.ch1Vertical}));
+      if (patch.ch2Vertical) setCh2Vertical(prev => ({...prev, ...patch.ch2Vertical}));
+      if (patch.horizontal) setHorizontal(prev => ({...prev, ...patch.horizontal}));
+      if (patch.trigger) setTrigger(prev => ({...prev, ...patch.trigger}));
+      if (patch.math) setMath(prev => ({...prev, ...patch.math}));
+      if (patch.sampleRate !== undefined) setSampleRate(patch.sampleRate);
+      if (patch.phosphorEnabled !== undefined) setPhosphorEnabled(patch.phosphorEnabled);
+      if (patch.phosphorIntensity !== undefined) setPhosphorIntensity(patch.phosphorIntensity);
+      if (patch.phosphorTracesCount !== undefined) setPhosphorTracesCount(patch.phosphorTracesCount);
+      return {accepted: true};
+    }
+    if (!connected) throw new Error('Scope is not connected');
+    if (action === 'run') { await startRef.current(); if (!runningRef.current) throw new Error('Capture start failed'); }
+    else if (action === 'stop') { await stop(true); setAcquireMode('stopped'); }
+    else if (action === 'single') await handleSingle();
+    else if (action === 'autoset') await handleAutoSet();
+    else if (action === 'force') handleForceTrigger();
+    else if (action === 'clear') handleClear();
+    else if (action === 'reference') handleSaveReference();
+    else if (action === 'csv') {
+      const names = viewMode === 'fft' ? ['FFT(V)'] : viewMode === 'xy' ? ['Y(V)'] : ['CH1(V)'];
+      const indices = [1];
+      if (viewMode === 'time' && ch2Vertical.enabled) { names.push('CH2(V)'); indices.push(2); }
+      if (viewMode === 'time' && math.enabled) { names.push('MATH'); indices.push(3); }
+      return {csv: traceCsv(plotRef.current, names, viewMode, indices), settings: status()};
+    } else if (action === 'png') {
+      const canvas = plotRef.current?.root.querySelector('canvas');
+      if (!canvas) throw new Error('No plot to export');
+      return {base64: canvas.toDataURL('image/png').split(',')[1], settings: status()};
+    } else throw new Error(`Unknown scope action: ${action}`);
+    return {accepted: true};
+  };
+
   const rateLabel = SAMPLE_RATES_DSO.find(r => r.hz === sampleRate)?.label ?? `${sampleRate / 1e6}MS/s`;
 
   return (
     <div className="flex flex-col h-full bg-fob-surface text-fob-text font-mono text-xs select-none">
       {/* Acquire Toolbar */}
       <AcquireToolbar
-        running={acquireMode === "running" || acquireMode === "single-armed"}
+        running={acquireMode !== 'stopped' && acquireMode !== 'single-held'}
         paused={acquireMode === "single-held"}
         onRun={handleRun}
         onStop={handleStop}

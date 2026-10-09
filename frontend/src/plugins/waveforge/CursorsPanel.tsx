@@ -24,11 +24,18 @@ function V(n: number): string {
   return `${n.toFixed(2)}V`;
 }
 
+function Hz(n: number): string {
+  if (Math.abs(n) >= 1e6) return `${(n / 1e6).toFixed(2)}MHz`;
+  if (Math.abs(n) >= 1e3) return `${(n / 1e3).toFixed(2)}kHz`;
+  return `${n.toFixed(0)}Hz`;
+}
+
 export function CursorsPanel({ enabled, onToggle, cursorA, cursorB, viewMode = "time" }: Props) {
   const isXy = viewMode === "xy";
+  const isFft = viewMode === "fft";
   const dx = cursorA && cursorB ? Math.abs(cursorB.x - cursorA.x) : null;
   const dy = cursorA && cursorB ? Math.abs(cursorB.y - cursorA.y) : null;
-  const invDt = !isXy && dx && dx > 0 ? 1 / dx : null;
+  const invDt = !isXy && !isFft && dx && dx > 0 ? 1 / dx : null;
 
   return (
     <CollapsibleSection title="Cursors" defaultOpen={false}>
@@ -46,13 +53,13 @@ export function CursorsPanel({ enabled, onToggle, cursorA, cursorB, viewMode = "
       {cursorA && (
         <div className="text-[11px] text-fob-text mb-1">
           <span className="text-fob-orange font-bold">A</span>{" "}
-          {isXy ? `x=${V(cursorA.x)} y=${V(cursorA.y)}` : `t=${F(cursorA.x)} v=${V(cursorA.y)}`}
+          {isXy ? `x=${V(cursorA.x)} y=${V(cursorA.y)}` : isFft ? `f=${Hz(cursorA.x)} v=${V(cursorA.y)}` : `t=${F(cursorA.x)} v=${V(cursorA.y)}`}
         </div>
       )}
       {cursorB && (
         <div className="text-[11px] text-fob-text mb-1">
           <span className="text-fob-blue font-bold">B</span>{" "}
-          {isXy ? `x=${V(cursorB.x)} y=${V(cursorB.y)}` : `t=${F(cursorB.x)} v=${V(cursorB.y)}`}
+          {isXy ? `x=${V(cursorB.x)} y=${V(cursorB.y)}` : isFft ? `f=${Hz(cursorB.x)} v=${V(cursorB.y)}` : `t=${F(cursorB.x)} v=${V(cursorB.y)}`}
         </div>
       )}
       {dx != null && dy != null && (
@@ -64,7 +71,7 @@ export function CursorsPanel({ enabled, onToggle, cursorA, cursorB, viewMode = "
             </>
           ) : (
             <>
-              <div>ΔT={F(dx)}</div>
+              <div>{isFft ? `Δf=${Hz(dx)}` : `ΔT=${F(dx)}`}</div>
               <div>ΔV={V(dy)}</div>
               {invDt != null && <div>1/ΔT={invDt >= 1e3 ? `${(invDt / 1e3).toFixed(2)}kHz` : `${invDt.toFixed(1)}Hz`}</div>}
             </>

@@ -16,6 +16,7 @@ export interface UsbConfig {
   sample_rate_hz: number;
   sample_width: 8 | 16;
   voltage_range?: number; // Vpp for DSO mode (5, 2.5, 1, 0.5)
+  voltage_range_ch2?: number;
   test_signal?: string; // "off", "1kHz", "10kHz", "100kHz"
   sigrok?: boolean;
   sigrok_driver?: string;
@@ -29,6 +30,7 @@ export interface UsbDataChunk {
   samples: number;
   b64: string;
   data?: Uint8Array; // raw binary from Rust native capture (no base64)
+  discontinuous?: boolean;
 }
 
 export type UsbDataHandler = (chunk: UsbDataChunk) => void;

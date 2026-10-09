@@ -22,6 +22,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -66,6 +67,8 @@ log = logging.getLogger("usb_server")
 FIRMWARE_DIR = Path(__file__).parent / "firmware"
 
 DEVICES = [
+    # A sigrok session leaves only RAM firmware; load the DSO bridge firmware.
+    {"vid": 0x1D50, "pid": 0x608E, "name": "Hantek 6022BL (Scope)", "mode": "dso", "needs_fw": True, "fw": "hantek-6022bl-scope.fw", "sigrok": False, "sigrok_driver": "", "renumerate_vid": 0x04B5, "renumerate_pid": 0x602A},
     # 6022BL after 16ch firmware swap: enumerates as sigrok FX2 16ch
     {"vid": 0x1D50, "pid": 0x608D, "name": "Hantek 6022BL (16ch)",   "mode": "la",  "needs_fw": False, "fw": None,                     "sigrok": True,  "sigrok_driver": "fx2lafw"},
     # 6022BL H/P NOT pressed: sigrok fx2lafw — 8-ch logic analyzer (original firmware)
@@ -133,9 +136,23 @@ MAX_16BIT_SAMPLE_RATE = 12_000_000
 # USB helpers
 # ---------------------------------------------------------------------------
 
+def _find_usb(**kwargs):
+    if sys.platform == "win32":
+        import libusb_package
+        return libusb_package.find(**kwargs)
+    return usb.core.find(**kwargs)
+
+
 def _usb_device_present(vid: int, pid: int) -> tuple[bool, int, int]:
     """Check USB device presence via sysfs — no libusb handle opened.
     Returns (found, bus, address)."""
+    if sys.platform == "win32":
+        dev = _find_usb(idVendor=vid, idProduct=pid)
+        if dev is None:
+            return False, 0, 0
+        result = True, dev.bus, dev.address
+        usb.util.dispose_resources(dev)
+        return result
     target = f"{vid:04x}:{pid:04x}"
     try:
         for bus_dir in Path("/sys/bus/usb/devices").iterdir():
@@ -165,7 +182,7 @@ def _scan_devices() -> list[dict]:
             if present:
                 found.append({**d, "address": addr, "bus": bus})
         else:
-            dev = usb.core.find(idVendor=d["vid"], idProduct=d["pid"])
+            dev = _find_usb(idVendor=d["vid"], idProduct=d["pid"])
             if dev is not None:
                 found.append({**d, "address": dev.address, "bus": dev.bus})
                 try:
@@ -237,7 +254,7 @@ def _wait_renumeration(vid: int, pid: int, timeout: float = 15.0) -> Optional[us
     time.sleep(1.5)
     while time.monotonic() < deadline:
         # Log all currently visible devices (helps identify unknown renumeration PID)
-        all_devs = list(usb.core.find(find_all=True))
+        all_devs = list(_find_usb(find_all=True))
         for d in all_devs:
             key = (d.idVendor, d.idProduct)
             if key not in logged_pids:
@@ -245,12 +262,12 @@ def _wait_renumeration(vid: int, pid: int, timeout: float = 15.0) -> Optional[us
                 log.info(f"  USB device seen: {d.idVendor:04x}:{d.idProduct:04x}")
 
         # Preferred: renumerated to sigrok fx2lafw VID:PID
-        dev = usb.core.find(idVendor=0x1D50, idProduct=0x608D)
+        dev = _find_usb(idVendor=0x1D50, idProduct=0x608D) if pid == 0x608D else None
         if dev is not None:
             log.info("Device renumerated: 1d50:608d (fx2lafw)")
             return dev
         # Fallback: came back with original VID:PID
-        dev = usb.core.find(idVendor=vid, idProduct=pid)
+        dev = _find_usb(idVendor=vid, idProduct=pid)
         if dev is not None:
             log.info(f"Device renumerated: {vid:04x}:{pid:04x} (original PID)")
             return dev
@@ -268,6 +285,7 @@ class CaptureConfig:
     sample_rate_hz: int = 12_000_000
     sample_width: int = 16    # 8 or 16
     voltage_range: float = 1.0  # Vpp for DSO
+    voltage_range_ch2: float = 1.0
     test_signal: str = "off"   # "off", "32 Hz".."100 kHz"
     sigrok: bool = False
     sigrok_driver: str = ""
@@ -283,10 +301,13 @@ class ServerState:
     clients: set = field(default_factory=set)
     sigrok_proc: Optional[subprocess.Popen] = None
     rust_proc: Optional[subprocess.Popen] = None
+    frame_ack: threading.Event = field(default_factory=threading.Event)
+    scope_owner: object = None
 
 state = ServerState()
 _state_lock = asyncio.Lock()
 _loop: Optional[asyncio.AbstractEventLoop] = None
+_scope_pending: dict = {}
 
 # ---------------------------------------------------------------------------
 # Broadcast to all WS clients
@@ -474,7 +495,7 @@ def _hantek_setup(dev: usb.core.Device, cfg) -> bool:
     if not _cmd("CH0_RANGE", HANTEK_SET_CH0_RANGE, bytes([volt_code])):
         return False
     time.sleep(0.01)
-    if not _cmd("CH1_RANGE", HANTEK_SET_CH1_RANGE, bytes([volt_code])):
+    if not _cmd("CH1_RANGE", HANTEK_SET_CH1_RANGE, bytes([HANTEK_VOLT_RANGE[cfg.voltage_range_ch2]])):
         return False
     time.sleep(0.01)
     if not _cmd("SAMPLERATE", HANTEK_SET_SAMPLERATE, bytes([rate_code])):
@@ -512,7 +533,7 @@ def _reacquire_device() -> bool:
     ]
     for vid, pid in candidates:
         try:
-            dev = usb.core.find(idVendor=vid, idProduct=pid)
+            dev = _find_usb(idVendor=vid, idProduct=pid)
             if dev:
                 state.device = dev
                 log.info(f"Re-acquired device {vid:04x}:{pid:04x}")
@@ -673,6 +694,39 @@ def _capture_loop_rust() -> None:
     log.info("Rust capture loop exited")
 
 
+def _capture_loop_windows() -> None:
+    """Read interleaved DSO samples with WinUSB using the existing binary protocol."""
+    dev = state.device
+    rate = state.config.sample_rate_hz
+    read_size = max(16_384, min(262_144, ((rate * 2 // 30 + 511) // 512) * 512))
+    remainder = b""
+    sequence = 0
+    try:
+        while not state.stop_event.is_set():
+            try:
+                raw = remainder + bytes(dev.read(BULK_IN_EP_DSO, read_size, timeout=500))
+            except usb.core.USBTimeoutError:
+                continue
+            count = len(raw) - len(raw) % 2
+            remainder = raw[count:]
+            sequence = sequence % 0xFFFFFF + 1
+            if count and (not state.clients or state.frame_ack.is_set()):
+                state.frame_ack.clear()
+                frame = bytearray(_build_la_binary_frame(rate, 8, raw[:count]))
+                frame[20:24] = ((sequence << 8) | 8).to_bytes(4, 'little')
+                broadcast_binary_sync(bytes(frame))
+    except usb.core.USBError as exc:
+        log.exception("Windows DSO capture failed")
+        broadcast_sync({"type": "usb_error", "message": str(exc)})
+    finally:
+        try:
+            dev.ctrl_transfer(0x40, HANTEK_START, 0, 0, b"\x00", USB_TIMEOUT)
+        except usb.core.USBError as exc:
+            log.warning("DSO stop command failed: %s", exc)
+        state.capturing = False
+        broadcast_sync({"type": "usb_stopped"})
+
+
 def _capture_loop_direct() -> None:
     dev = state.device
     if dev is None:
@@ -683,7 +737,10 @@ def _capture_loop_direct() -> None:
 
     # DSO mode: use Rust native binary for real-time performance
     if is_dso:
-        _capture_loop_rust()
+        if sys.platform == "win32":
+            _capture_loop_windows()
+        else:
+            _capture_loop_rust()
         return
 
     # LA mode: keep pyusb path for fx2lafw
@@ -995,6 +1052,12 @@ async def handle_usb_connect(ws: WebSocketServerProtocol, req: dict) -> dict:
     if entry is None:
         return {"type": "usb_error", "message": f"Unknown device {vid:04x}:{pid:04x}"}
 
+    await _stop_capture()
+    if state.device is not None:
+        usb.util.dispose_resources(state.device)
+        state.device = None
+    state.device_info = None
+
     use_sigrok = entry.get("sigrok", False)
 
     if use_sigrok:
@@ -1010,7 +1073,7 @@ async def handle_usb_connect(ws: WebSocketServerProtocol, req: dict) -> dict:
         return {"type": "usb_connected", "device": entry["name"], "mode": entry["mode"], "binary_la": True}
 
     # Direct pyusb path
-    dev = usb.core.find(idVendor=vid, idProduct=pid)
+    dev = _find_usb(idVendor=vid, idProduct=pid)
     if dev is None:
         return {"type": "usb_error", "message": "Device not found"}
 
@@ -1048,7 +1111,7 @@ async def handle_usb_connect(ws: WebSocketServerProtocol, req: dict) -> dict:
             pass
 
     state.device = dev
-    state.device_info = entry
+    state.device_info = {**entry, "vid": dev.idVendor, "pid": dev.idProduct, "needs_fw": False}
     state.config.sigrok = False
     state.config.sigrok_driver = ""
     state.config.mode = entry["mode"]
@@ -1072,11 +1135,19 @@ async def handle_usb_disconnect(_ws: WebSocketServerProtocol, _req: dict) -> dic
 
 
 async def handle_usb_configure(_ws: WebSocketServerProtocol, req: dict) -> dict:
+    mode = req.get("mode", state.config.mode)
+    if mode == "dso":
+        if req.get("sample_rate_hz", state.config.sample_rate_hz) not in HANTEK_SAMPLERATE_MAP:
+            return {"type": "usb_error", "message": "Unsupported DSO sample rate"}
+        for key in ("voltage_range", "voltage_range_ch2"):
+            if req.get(key, getattr(state.config, key)) not in HANTEK_VOLT_RANGE:
+                return {"type": "usb_error", "message": "Unsupported DSO input range"}
     state.config.sample_rate_hz  = req.get("sample_rate_hz", state.config.sample_rate_hz)
     state.config.sample_width    = req.get("sample_width", state.config.sample_width)
     state.config.sigrok          = req.get("sigrok", state.config.sigrok)
     state.config.sigrok_driver   = req.get("sigrok_driver", state.config.sigrok_driver)
     state.config.voltage_range = req.get("voltage_range", state.config.voltage_range)
+    state.config.voltage_range_ch2 = req.get("voltage_range_ch2", state.config.voltage_range_ch2)
     state.config.test_signal     = req.get("test_signal", state.config.test_signal)
     req_mode = req.get("mode", state.config.mode)
     state.config.mode = req_mode
@@ -1094,7 +1165,12 @@ async def handle_usb_start(_ws: WebSocketServerProtocol, _req: dict) -> dict:
         if not _reacquire_device():
             return {"type": "usb_error", "message": "Not connected"}
 
+    if sys.platform == "win32" and state.config.mode == "dso":
+        if not await asyncio.to_thread(_hantek_setup, state.device, state.config):
+            return {"type": "usb_error", "message": "Hantek hardware configuration failed"}
+
     state.stop_event.clear()
+    state.frame_ack.set()
     state.capturing = True
     target = _capture_loop_sigrok if state.config.sigrok else _capture_loop_direct
     state.capture_thread = threading.Thread(target=target, daemon=True)
@@ -1226,7 +1302,42 @@ async def _stop_capture() -> None:
     log.info(f"Capture stopped in {elapsed:.2f}s")
 
 
+async def handle_scope_register(ws, _req):
+    state.scope_owner = ws
+    return {"type": "scope_registered"}
+
+
+async def handle_scope_control(_ws, req):
+    if state.scope_owner is None:
+        return {"type": "usb_error", "message": "Open the Scope view before using scope controls"}
+    command_id = uuid.uuid4().hex
+    future = asyncio.get_running_loop().create_future()
+    _scope_pending[command_id] = future
+    try:
+        await state.scope_owner.send(json.dumps({"type": "scope_control", "command_id": command_id,
+                                               "action": req.get("action"), "params": req.get("params", {})}))
+        payload = await asyncio.wait_for(future, 15)
+        return {"type": "scope_result", "result": payload}
+    finally:
+        _scope_pending.pop(command_id, None)
+
+
+async def handle_scope_result(ws, req):
+    if ws is not state.scope_owner:
+        return {"type": "usb_error", "message": "Not the active scope view"}
+    future = _scope_pending.get(req.get("command_id"))
+    if future is not None and not future.done():
+        if req.get("error"):
+            future.set_exception(RuntimeError(req['error']))
+        else:
+            future.set_result(req.get("result"))
+    return {"type": "scope_result_ack"}
+
+
 HANDLERS = {
+    "scope_register":            handle_scope_register,
+    "scope_control":             handle_scope_control,
+    "scope_result":              handle_scope_result,
     "usb_scan":                  handle_usb_scan,
     "usb_connect":               handle_usb_connect,
     "usb_disconnect":            handle_usb_disconnect,
@@ -1269,6 +1380,10 @@ async def ws_handler(ws: WebSocketServerProtocol) -> None:
                 continue
 
             msg_type = req.get("type", "")
+            if msg_type == "usb_frame_ack":
+                if ws is state.scope_owner:
+                    state.frame_ack.set()
+                continue
             req_id   = req.get("req_id")
             handler  = HANDLERS.get(msg_type)
 
@@ -1303,6 +1418,14 @@ async def ws_handler(ws: WebSocketServerProtocol) -> None:
         pass
     finally:
         state.clients.discard(ws)
+        if ws is state.scope_owner:
+            state.scope_owner = None
+            for future in _scope_pending.values():
+                if not future.done():
+                    future.set_exception(ConnectionError("Scope view disconnected"))
+        if not state.clients:
+            async with _state_lock:
+                await _stop_capture()
         log.info(f"Client disconnected: {ws.remote_address}")
 
 # ---------------------------------------------------------------------------

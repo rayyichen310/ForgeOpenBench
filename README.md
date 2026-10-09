@@ -80,6 +80,9 @@ chmod +x install.sh && ./install.sh
 
 `install.sh` is idempotent. It detects your OS (Debian, Ubuntu, Arch, macOS, Raspberry Pi OS), installs Node.js, Python, sigrok-cli, sets up a udev rule for the Hantek, creates a Python virtual environment, installs npm packages, and offers to make a `.desktop` launcher. **Continuous integration and daily use are currently verified only on Arch Linux.** Other distros and macOS/Windows (including WSL) are expected to work but remain to be fully tested and proven by the community.
 
+This checkout includes native Windows Hantek 6022BL scope support. See
+[Windows scope setup and CLI control](WINDOWS_SCOPE.md) for its launcher, requirements, and validation limits.
+
 > **udev / USB permissions:** The install script copies `99-waveforge.rules` to `/etc/udev/rules.d/` and sets `MODE="0666"`, so the device is accessible by any user. The rules also reference `GROUP="plugdev"`; if your distro (e.g. Arch) does not have that group, the script creates it and adds you to it. Being in both `plugdev` and `uucp` is fine and does not conflict. You may need to log out and back in for the group change to take effect.
 >
 > **Rust DSO capture binary:** The source for the scope-mode USB capture helper is in `server/usb-bridge/hantek-capture/`. `install.sh` builds it automatically if `cargo` is installed; otherwise it uses the pre-built binary in the repo. Paranoid users can rebuild it and compare the hash to verify the binary is clean.
