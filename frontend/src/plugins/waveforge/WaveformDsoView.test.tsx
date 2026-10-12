@@ -279,3 +279,21 @@ it('SR never joins across a dropped frame or rate/range/probe change and respect
     await expect(scope.command('sr')).rejects.toThrow('No captured samples');
   } finally {await scope.close();}
 });
+
+it('measurements selects readout keys from the CLI and rejects unknown keys',async()=>{
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true);
+  vi.stubGlobal('ResizeObserver',class {observe(){} disconnect(){}});
+  sessionStorage.clear();
+  let control:(action:string,params:Record<string,unknown>)=>Promise<unknown>;
+  const transport={registerScope:(handler:typeof control)=>{control=handler;return ()=>{};},onStopped:()=>()=>{}};
+  const host=document.createElement('div');
+  const root=createRoot(host);
+  try {
+    await act(async()=>root.render(<WaveformDsoView transport={transport as unknown as UsbTransport} connected={false} isActive/>));
+    expect(host.textContent).toContain('F=');
+    await act(async()=>{await control!('measurements',{ch1:['vpp','vrms'],ch2:['vpp','vrms']});});
+    expect(host.textContent).not.toContain('F=');
+    await expect(control!('measurements',{ch1:['bogus']})).rejects.toThrow('measurement keys');
+    await expect(control!('measurements',{ch3:['vpp']})).rejects.toThrow('measurement keys');
+  } finally {await act(async()=>root.unmount());vi.unstubAllGlobals();}
+});

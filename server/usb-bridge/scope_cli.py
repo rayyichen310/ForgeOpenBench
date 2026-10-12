@@ -43,7 +43,7 @@ async def run(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['status', 'set', 'run', 'stop', 'single', 'autoset', 'force', 'clear', 'reference', 'csv', 'png', 'sr', 'zero', 'zero-reset', 'load-sr', 'view'])
+    parser.add_argument('action', choices=['status', 'set', 'run', 'stop', 'single', 'autoset', 'force', 'clear', 'reference', 'csv', 'png', 'sr', 'zero', 'zero-reset', 'load-sr', 'view', 'measurements'])
     parser.add_argument('--params', default='{}', help='Scope state patch; zero needs {"channel":"ch1","groundConfirmed":true}; zero-reset needs {"channel":"ch1"}; load-sr accepts window, zero and display; view and png accept x and y ranges; png also width and height')
     parser.add_argument('--input', help='Scope SR file to show as a held capture (load-sr)')
     parser.add_argument('--output', help='New output file for csv/png/sr; existing files are never overwritten')

@@ -12,6 +12,7 @@ import { MeasurementBar } from "./MeasurementBar";
 import { MeasurementsPanel } from "./MeasurementsPanel";
 import { CursorsPanel } from "./CursorsPanel";
 import type { Measurements, VerticalState, HorizontalState, TriggerState, MathState, MeasurementKey, TraceSnapshot, ScopePreset, Cursor } from "./scopeTypes";
+import { ALL_MEASUREMENT_KEYS } from "./scopeTypes";
 import { SAMPLE_RATES_DSO, VDIV_STEPS, SDIV_STEPS, formatSDiv, vDivToVpp, sDivToWindowMs } from "./scopeConstants";
 import { calcMeasurements, autoset } from "./waveformMath";
 import {
@@ -20,7 +21,7 @@ import {
 } from "./canvasOverlays";
 import { renderNow, xyPaths } from "./renderEngine";
 import { handleAcquireMode } from "./acquireModes";
-import { timeAxisValues, freqAxisValues, makeVoltAxisValues } from "./axisFormatters";
+import { timeAxisValues, freqAxisValues, makeVoltAxisValues, divisionSplits } from "./axisFormatters";
 import {
   notifyStarted, notifyStopped, notifySingle, notifyRolling, notifyAveraging,
   notifyConnected, notifyDisconnected, notifyReferenceSaved, notifyReferenceCleared,
@@ -428,8 +429,8 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
         padding: [0, 0, 0, 0],
         scales: { x: { time: false } },
         axes: [
-          { stroke: "#666688", grid: { stroke: "#1A1A2E" }, values: timeAxisValues },
-          { stroke: "#666688", grid: { stroke: "#1A1A2E" }, label: vpp < 2 ? "mV" : "V", values: voltAxisValues },
+          { stroke: "#666688", grid: { stroke: "#3A3A52" }, ticks: { stroke: "#3A3A52" }, splits: divisionSplits, values: timeAxisValues },
+          { stroke: "#666688", grid: { stroke: "#3A3A52" }, ticks: { stroke: "#3A3A52" }, splits: divisionSplits, label: vpp < 2 ? "mV" : "V", values: voltAxisValues },
         ],
         series: [
           {},
@@ -1319,6 +1320,16 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
       await loadReplay(capture, replayZero(capture, (params.zero ?? {}) as Partial<Record<ScopeChannel, number>>), display);
       return {accepted: true, samples: capture.ch1.length, sampleRate: capture.sampleRate,
         timeOffsetS: capture.timeOffsetS, zeroCalibration: zeroRef.current};
+    }
+    if (action === 'measurements') {
+      for (const [channel, keys] of Object.entries(params)) {
+        if ((channel !== 'ch1' && channel !== 'ch2') || !Array.isArray(keys) ||
+            keys.some(key => !ALL_MEASUREMENT_KEYS.includes(key as MeasurementKey)))
+          throw new Error('measurements needs {"ch1":[...],"ch2":[...]} with known measurement keys');
+      }
+      if (params.ch1) setCh1MeasKeys(params.ch1 as MeasurementKey[]);
+      if (params.ch2) setCh2MeasKeys(params.ch2 as MeasurementKey[]);
+      return {accepted: true};
     }
     if (action === 'png' || action === 'view') {
       const plot = plotRef.current;

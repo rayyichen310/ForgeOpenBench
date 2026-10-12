@@ -1,5 +1,14 @@
 import type uPlot from "uplot";
 
+/** Ten screen divisions, like a scope graticule: lines stay fixed while the scale changes. */
+export function divisionSplits(_u: uPlot, _axis: number, min: number, max: number): number[] {
+  // Snap rounding residue to 0 so the centre line is not labelled "-0.00V".
+  return Array.from({ length: 11 }, (_, i) => {
+    const value = min + (max - min) * i / 10;
+    return Math.abs(value) < Math.abs(max - min) * 1e-9 ? 0 : value;
+  });
+}
+
 export function timeAxisValues(_u: uPlot, splits: number[]): string[] {
   const maxVal = Math.max(...splits.map(Math.abs));
   if (maxVal < 1e-6) return splits.map(v => `${(v * 1e9).toFixed(0)}ns`);
