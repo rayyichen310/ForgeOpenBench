@@ -12,6 +12,7 @@ WebSocket: ws://localhost:8766
 """
 
 import asyncio
+import base64
 import collections
 import json
 import logging
@@ -32,6 +33,7 @@ from concurrent.futures import Future as CFuture
 import usb.core
 import usb.util
 import websockets
+from scope_sr import build_sr, save_sr
 from websockets.server import WebSocketServerProtocol
 
 # ---------------------------------------------------------------------------
@@ -1317,6 +1319,9 @@ async def handle_scope_control(_ws, req):
         await state.scope_owner.send(json.dumps({"type": "scope_control", "command_id": command_id,
                                                "action": req.get("action"), "params": req.get("params", {})}))
         payload = await asyncio.wait_for(future, 15)
+        if req.get('action') == 'sr':
+            archive, summary = await asyncio.to_thread(build_sr, payload)
+            payload = {'base64': base64.b64encode(archive).decode('ascii'), **summary}
         return {"type": "scope_result", "result": payload}
     finally:
         _scope_pending.pop(command_id, None)
@@ -1334,7 +1339,13 @@ async def handle_scope_result(ws, req):
     return {"type": "scope_result_ack"}
 
 
+async def handle_scope_export_sr(_ws, req):
+    result = await asyncio.to_thread(save_sr, req['snapshot'])
+    return {'type': 'scope_sr_saved', **result}
+
+
 HANDLERS = {
+    "scope_export_sr":           handle_scope_export_sr,
     "scope_register":            handle_scope_register,
     "scope_control":             handle_scope_control,
     "scope_result":              handle_scope_result,
@@ -1437,7 +1448,7 @@ async def main() -> None:
     _loop = asyncio.get_event_loop()
     host, port = "localhost", 8766
     log.info(f"WaveForge USB bridge starting on ws://{host}:{port}")
-    async with websockets.serve(ws_handler, host, port, ping_interval=10, ping_timeout=20):
+    async with websockets.serve(ws_handler, host, port, ping_interval=10, ping_timeout=20, max_size=8_000_000):
         await asyncio.Future()  # run forever
 
 

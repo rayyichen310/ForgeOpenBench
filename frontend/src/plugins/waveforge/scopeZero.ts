@@ -1,0 +1,51 @@
+import type {ScopeCapture} from './scopeExport';
+import type {VerticalState} from './scopeTypes';
+import {vDivToVpp} from './scopeConstants';
+
+export type ScopeChannel = 'ch1' | 'ch2';
+export interface ZeroCalibration {
+  offsetVolts: number;
+  hardwareRangeVpp: number;
+  probe: number;
+  sampleRate: number;
+  capturedAt: string;
+  samples: number;
+}
+export type ZeroCalibrations = Partial<Record<ScopeChannel, ZeroCalibration>>;
+export type CaptureZeroCalibration = Record<ScopeChannel, ZeroCalibration | null>;
+
+export function zeroMatches(profile: ZeroCalibration | undefined, vertical: VerticalState, rate: number): boolean {
+  return !!profile && profile.sampleRate === rate && profile.probe === vertical.probe &&
+    profile.hardwareRangeVpp === vDivToVpp(vertical.vDiv / vertical.probe);
+}
+
+export function zeroOffset(profile: ZeroCalibration | undefined, vertical: VerticalState, rate: number): number {
+  return zeroMatches(profile, vertical, rate) ? profile!.offsetVolts : 0;
+}
+
+export function estimateZero(capture: ScopeCapture | null, channel: ScopeChannel, vertical: VerticalState, rate: number): ZeroCalibration {
+  if (!capture) throw new Error('Capture GND in DC and Stop before zero calibration');
+  const capturedVertical = channel === 'ch1' ? capture.settings.ch1Vertical : capture.settings.ch2Vertical;
+  if (vertical.coupling !== 'dc' || capturedVertical.coupling !== 'dc')
+    throw new Error('Zero calibration requires a DC capture; software GND coupling is not a GND measurement');
+  const values = capture[channel];
+  if (values.length < 100) throw new Error('Zero calibration requires at least 100 captured GND samples');
+  const profile = {
+    offsetVolts: values.reduce((sum, value) => sum + value, 0) / values.length,
+    hardwareRangeVpp: vDivToVpp(capturedVertical.vDiv / capturedVertical.probe),
+    probe: capturedVertical.probe, sampleRate: capture.sampleRate,
+    capturedAt: capture.capturedAt, samples: values.length,
+  };
+  if (!zeroMatches(profile, vertical, rate)) throw new Error('Capture settings changed; capture GND again and Stop');
+  return profile;
+}
+
+export function captureZero(profiles: ZeroCalibrations, capture: ScopeCapture,
+  ch1: VerticalState, ch2: VerticalState, rate: number): CaptureZeroCalibration {
+  const active = (channel: ScopeChannel, vertical: VerticalState) => {
+    const capturedVertical = channel === 'ch1' ? capture.settings.ch1Vertical : capture.settings.ch2Vertical;
+    return zeroMatches(profiles[channel], vertical, rate) &&
+      zeroMatches(profiles[channel], capturedVertical, capture.sampleRate) ? profiles[channel]! : null;
+  };
+  return {ch1: active('ch1', ch1), ch2: active('ch2', ch2)};
+}

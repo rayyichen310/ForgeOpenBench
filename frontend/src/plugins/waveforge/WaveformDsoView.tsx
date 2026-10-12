@@ -28,9 +28,13 @@ import {
   notifyPresetsImported, notifyPresetDeleted, notifyError,
 } from "./scopeToasts";
 import { loadPresets, savePresets, createPreset, uniquePresetName, exportPresets, importPresets } from "./scopePresets";
-import { exportTraceCsv, exportPlotPng, traceCsv } from "./scopeExport";
+import { exportTraceCsv, exportPlotPng, traceCsv, encodeScopeCapture } from "./scopeExport";
+import type { ScopeCapture } from './scopeExport';
 import { processChannel, triggerSamples } from "./scopeProcessing";
 import { validateScopePatch } from "./scopeSettings";
+import {ZeroPanel} from './ZeroPanel';
+import {captureZero, estimateZero, zeroMatches, zeroOffset} from './scopeZero';
+import type {ScopeChannel, ZeroCalibrations} from './scopeZero';
 
 /* ── Props ─────────────────────────────────────────────────────────── */
 interface Props {
@@ -76,6 +80,17 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
   useEffect(() => () => { dataOffRef.current?.(); dataOffRef.current = null; }, []);
   const ch1Buf = useRef<number[]>([]);
   const ch2Buf = useRef<number[]>([]);
+  const captureRef = useRef<ScopeCapture | null>(null);
+  const [zeroCalibration, setZeroCalibration] = useState<ZeroCalibrations>({});
+  const zeroRef = useRef<ZeroCalibrations>({});
+  const freshZeroCaptureRef = useRef(false);
+  useEffect(() => {
+    // A reconnect may represent another instrument; never restore an old GND baseline.
+    zeroRef.current = {};
+    freshZeroCaptureRef.current = false;
+    setZeroCalibration({});
+  }, [connected, transport]);
+  const [lastSrPath, setLastSrPath] = useState<string | null>(null);
   const mathBuf = useRef<number[]>([]);
   const filtRing1 = useRef<number[]>([]);
   const filtRing2 = useRef<number[]>([]);
@@ -296,13 +311,22 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
       })();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sampleRate, inputVpp1, inputVpp2]);
+  }, [sampleRate, inputVpp1, inputVpp2, ch1Vertical.probe, ch2Vertical.probe]);
   // Clear phosphor history when trigger mode changes — old ghosts don't match new mode behavior
   useEffect(() => {
     phosphorTraces.current = [];
   }, [trigger.mode]);
   const mathRef = useRef(math);
   useEffect(() => { mathRef.current = math; }, [math]);
+
+  const renderContext = useCallback((rate: number) => ({
+    plotRef, overviewPlotRef,
+    viewMode: (mathRef.current.enabled && mathRef.current.op === 'fft' ? 'fft' : mathRef.current.enabled && mathRef.current.op === 'xy' ? 'xy' : 'time') as 'time' | 'fft' | 'xy',
+    sampleRateRef: {current:rate}, mathRef, phosphorEnabledRef,
+    horizontalRef, triggerRef, ch1VerticalRef, ch2VerticalRef, windowMs,
+    phosphorTracesRef: phosphorTraces, plotThrottleRef, forceTriggerRef,
+    chunkTimesRef: chunkTimes, renderCountRef: renderCount, renderRateT0Ref: renderRateT0,
+  }), [windowMs]);
 
   // Persist state on changes (survives F5, resets on new tab / hard refresh)
   useEffect(() => {
@@ -741,7 +765,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
   const totalBytes = useRef(0);
   const dataAgeT0 = useRef(0);
   const pushData = useCallback((chunk: UsbDataChunk) => {
-    if (chunk.discontinuous) {
+    if (chunk.discontinuous || (captureRef.current && captureRef.current.sampleRate !== chunk.rate)) {
       ch1Buf.current = []; ch2Buf.current = [];
       filtRing1.current = []; filtRing2.current = [];
     }
@@ -775,10 +799,27 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
       ch2Buf.current = ch2Buf.current.slice(-maxSamples);
     }
 
+    // Keep the raw buffers and their settings before Single/Stop clears the live refs.
+    captureRef.current = {
+      sampleRate: chunk.rate, capturedAt: new Date().toISOString(),
+      ch1: ch1Buf.current, ch2: ch2Buf.current,
+      settings: {
+        sampleRate: chunk.rate, ch1Vertical: {...ch1VerticalRef.current}, ch2Vertical: {...ch2VerticalRef.current},
+        horizontal: {...horizontalRef.current}, trigger: {...triggerRef.current}, math: {...mathRef.current},
+        phosphorEnabled: phosphorEnabledRef.current, phosphorIntensity: phosphorIntensityRef.current,
+        phosphorTracesCount: phosphorTracesCountRef.current,
+      },
+    };
+    captureRef.current.zeroCalibration = captureZero(zeroRef.current, captureRef.current,
+      ch1VerticalRef.current, ch2VerticalRef.current, sampleRateRef.current);
+    freshZeroCaptureRef.current = true;
+
     // Measurements (throttled ~5Hz)
     const v1 = ch1VerticalRef.current, v2 = ch2VerticalRef.current;
-    const channel1 = processChannel(ch1Buf.current, v1.coupling, v1.invert, v1.bwLimit, chunk.rate);
-    const channel2 = processChannel(ch2Buf.current, v2.coupling, v2.invert, v2.bwLimit, chunk.rate);
+    const channel1 = processChannel(ch1Buf.current, v1.coupling, v1.invert, v1.bwLimit, chunk.rate,
+      captureRef.current.zeroCalibration.ch1?.offsetVolts ?? 0);
+    const channel2 = processChannel(ch2Buf.current, v2.coupling, v2.invert, v2.bwLimit, chunk.rate,
+      captureRef.current.zeroCalibration.ch2?.offsetVolts ?? 0);
     const now = Date.now();
     if (now - measThrottleRef.current > 200) {
       measThrottleRef.current = now;
@@ -806,16 +847,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
     }
 
     // Trigger detection helper — returns crossing index or -1
-    const renderCtx = {
-      plotRef, overviewPlotRef,
-      viewMode: (mathRef.current.enabled && mathRef.current.op === 'fft' ? 'fft' : mathRef.current.enabled && mathRef.current.op === 'xy' ? 'xy' : 'time') as "time" | "fft" | "xy",
-      sampleRateRef, mathRef, phosphorEnabledRef,
-      horizontalRef, triggerRef,
-      ch1VerticalRef, ch2VerticalRef, windowMs,
-      phosphorTracesRef: phosphorTraces, plotThrottleRef, forceTriggerRef,
-      chunkTimesRef: chunkTimes, renderCountRef: renderCount,
-      renderRateT0Ref: renderRateT0,
-    };
+    const renderCtx = renderContext(chunk.rate);
     const sourceBuf = triggerSamples(triggerRef.current.source === "ch2" ? channel2 : channel1, triggerRef.current.coupling, chunk.rate);
 
     handleAcquireMode({
@@ -848,8 +880,25 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
       setTriggerLevel: (level) => setTrigger(prev => ({ ...prev, level })),
       stop,
     });
-  }, [vpp, windowMs]);
+  }, [vpp, windowMs, renderContext]);
   useEffect(() => { pushDataRef.current = pushData; }, [pushData]);
+
+  useEffect(() => {
+    const capture = captureRef.current;
+    if (runningRef.current || !capture) return;
+    // Rebuild the frozen display from its raw samples, never by subtracting twice.
+    const active = captureZero(zeroCalibration, capture, ch1Vertical, ch2Vertical, sampleRate);
+    capture.zeroCalibration = active;
+    const c1 = processChannel(capture.ch1, ch1Vertical.coupling, ch1Vertical.invert, ch1Vertical.bwLimit,
+      capture.sampleRate, active.ch1?.offsetVolts ?? 0);
+    const c2 = processChannel(capture.ch2, ch2Vertical.coupling, ch2Vertical.invert, ch2Vertical.bwLimit,
+      capture.sampleRate, active.ch2?.offsetVolts ?? 0);
+    setCh1Meas(calcMeasurements(c1, capture.sampleRate));
+    setCh2Meas(calcMeasurements(c2, capture.sampleRate));
+    phosphorTraces.current = [];
+    avgAccumCount.current = 0; avgBuf1.current = []; avgBuf2.current = [];
+    renderNow(renderContext(capture.sampleRate), c1, c2, performance.now());
+  }, [zeroCalibration, sampleRate, ch1Vertical, ch2Vertical, buildPlot, renderContext]);
 
   // Start / stop
   const start = useCallback(async () => {
@@ -866,6 +915,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
       setAcquireMode(horizontalRef.current.rollMode ? 'rolling' : horizontalRef.current.acquireMode === 'average' ? 'averaging' : 'running');
       return;
     }
+    captureRef.current = null;
     ch1Buf.current = [];
     ch2Buf.current = [];
     mathBuf.current = [];
@@ -907,6 +957,16 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
     intentionalStopRef.current = intentional;
     runningRef.current = false;
     setAcquireMode("stopped");
+    // Flush throttled measurements without replacing the already averaged plot.
+    const capture = captureRef.current;
+    if (capture) {
+      const v1 = ch1VerticalRef.current, v2 = ch2VerticalRef.current;
+      const active = captureZero(zeroRef.current, capture, v1, v2, sampleRateRef.current);
+      setCh1Meas(calcMeasurements(processChannel(capture.ch1, v1.coupling, v1.invert, v1.bwLimit,
+        capture.sampleRate, active.ch1?.offsetVolts ?? 0), capture.sampleRate));
+      setCh2Meas(calcMeasurements(processChannel(capture.ch2, v2.coupling, v2.invert, v2.bwLimit,
+        capture.sampleRate, active.ch2?.offsetVolts ?? 0), capture.sampleRate));
+    }
     dataOffRef.current?.();
     dataOffRef.current = null;
     ch1Buf.current = [];
@@ -979,7 +1039,10 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
     while (ch1Buf.current.length < 100 && runningRef.current && performance.now() < deadline) {
       await new Promise(resolve => setTimeout(resolve, 20));
     }
-    const result = autoset(ch1Buf.current, ch2Buf.current, sampleRate, VDIV_STEPS, SDIV_STEPS);
+    const result = autoset(
+      ch1Buf.current.map(value => value - zeroOffset(zeroRef.current.ch1, ch1VerticalRef.current, sampleRate)),
+      ch2Buf.current.map(value => value - zeroOffset(zeroRef.current.ch2, ch2VerticalRef.current, sampleRate)),
+      sampleRate, VDIV_STEPS, SDIV_STEPS);
     if (result) {
       autoSettingRef.current = true;
       // eslint-disable-next-line no-console
@@ -1051,7 +1114,10 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
     forceTriggerRef.current?.();
   };
   const handleSetTrigger50Percent = () => {
-    const buf = ch1Buf.current.length > 10 ? ch1Buf.current : ch2Buf.current;
+    const useCh1 = ch1Buf.current.length > 10;
+    const vertical = useCh1 ? ch1VerticalRef.current : ch2VerticalRef.current;
+    const buf = processChannel(useCh1 ? ch1Buf.current : ch2Buf.current, vertical.coupling, vertical.invert,
+      vertical.bwLimit, sampleRate, zeroOffset(zeroRef.current[useCh1 ? 'ch1' : 'ch2'], vertical, sampleRate));
     if (buf.length < 10) return;
     let min = buf[0], max = buf[0];
     for (const v of buf) {
@@ -1062,6 +1128,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
     setTrigger(prev => ({ ...prev, level: mid }));
   };
   const handleClear = () => {
+    captureRef.current = null;
     ch1Buf.current = []; ch2Buf.current = []; mathBuf.current = [];
     phosphorTraces.current = [];
     plotRef.current?.setData([[], [], [], []]);
@@ -1186,10 +1253,37 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
   const handleSetCursorA = () => setCursorAtCenter(setCursorA);
   const handleSetCursorB = () => setCursorAtCenter(setCursorB);
 
+  const updateZero = (action: 'zero' | 'zero-reset', params: Record<string, unknown>) => {
+    if (!connected) throw new Error('Scope is not connected');
+    const channel = params.channel;
+    if (channel !== 'ch1' && channel !== 'ch2') throw new Error('Select channel ch1 or ch2');
+    if (runningRef.current) throw new Error('Stop acquisition before changing zero calibration');
+    const next = {...zeroRef.current};
+    if (action === 'zero') {
+      if (params.groundConfirmed !== true) throw new Error('Confirm the probe tip and ground clip are connected to the same GND');
+      next[channel] = estimateZero(freshZeroCaptureRef.current ? captureRef.current : null, channel,
+        channel === 'ch1' ? ch1VerticalRef.current : ch2VerticalRef.current, sampleRateRef.current);
+    } else delete next[channel];
+    zeroRef.current = next;
+    setZeroCalibration(next);
+    return {accepted:true, channel, calibration:next[channel] ?? null};
+  };
+  const uiZero = (action: 'zero' | 'zero-reset', channel: ScopeChannel) => {
+    try { updateZero(action, {channel, groundConfirmed:true}); }
+    catch (error) { notifyError(error instanceof Error ? error.message : String(error)); }
+  };
+  const zeroActive = {
+    ch1:zeroMatches(zeroCalibration.ch1, ch1Vertical, sampleRate),
+    ch2:zeroMatches(zeroCalibration.ch2, ch2Vertical, sampleRate),
+  };
+
   scopeControlRef.current = async (action, params) => {
     const status = () => ({connected, acquireMode: acquireModeRef.current, sampleRate, ch1Vertical, ch2Vertical,
-      horizontal, trigger, math, phosphorEnabled, ch1Meas, ch2Meas, samples: ch1Buf.current.length});
+      horizontal, trigger, math, phosphorEnabled, ch1Meas, ch2Meas, samples: ch1Buf.current.length,
+      zeroCalibration, zeroActive});
     if (action === 'status') return status();
+    if (action === 'sr') return encodeScopeCapture(captureRef.current);
+    if (action === 'zero' || action === 'zero-reset') return updateZero(action, params);
     if (action === 'set') {
       validateScopePatch(params);
       const patch = params as Partial<ScopePreset['state']>;
@@ -1260,9 +1354,21 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
         onImportPresets={handleImportPresets}
         onExportCsv={handleExportCsv}
         onExportPng={handleExportPng}
+        onExportSr={() => {
+          void (async () => {
+            try {
+              const result = await transport.exportScopeSr(encodeScopeCapture(captureRef.current));
+              setLastSrPath(result.path);
+            } catch (error) {
+              notifyError(error instanceof Error ? error.message : String(error));
+            }
+          })();
+        }}
         onSetCursorA={handleSetCursorA}
         onSetCursorB={handleSetCursorB}
       />
+
+      {lastSrPath && <div role="status" className="px-3 py-1 text-fob-text-dim select-text">SR saved: {lastSrPath}</div>}
 
       {/* Main Area: Canvas + Right Panel */}
       <div className="flex flex-1 gap-1 overflow-hidden min-h-0">
@@ -1283,6 +1389,9 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
             onCh2Change={setCh2Vertical}
             disabled={false}
           />
+          <ZeroPanel profiles={zeroCalibration} active={zeroActive}
+            disabled={!connected || (acquireMode !== 'stopped' && acquireMode !== 'single-held')}
+            onZero={channel=>uiZero('zero',channel)} onReset={channel=>uiZero('zero-reset',channel)} />
           <HorizontalPanel
             state={horizontal}
             onChange={setHorizontal}

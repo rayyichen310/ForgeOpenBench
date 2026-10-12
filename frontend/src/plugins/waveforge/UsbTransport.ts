@@ -267,6 +267,10 @@ export class UsbTransport implements IUsbTransport {
     await this._rpc("usb_configure", cfg as unknown as Record<string, unknown>);
   }
 
+  async exportScopeSr(snapshot: Record<string, unknown>): Promise<{path: string}> {
+    return await this._rpc('scope_export_sr', {snapshot}) as {path: string};
+  }
+
   async sendTestSignal(frequency: string): Promise<void> {
     await this._rpc("hantek_test_signal", { frequency });
   }

@@ -30,6 +30,7 @@ interface Props {
   onImportPresets: (json: string) => void;
   onExportCsv: () => void;
   onExportPng: () => void;
+  onExportSr: () => void;
   onSetCursorA: () => void;
   onSetCursorB: () => void;
 }
@@ -41,7 +42,7 @@ export function AcquireToolbar({
   onSaveRef, onClearRef, hasRef,
   sampleRateLabel, sDivLabel, connected,
   presets, selectedPreset, onSelectPreset, onSavePreset, onLoadPreset, onDeletePreset,
-  onExportPresets, onImportPresets, onExportCsv, onExportPng,
+  onExportPresets, onImportPresets, onExportCsv, onExportPng, onExportSr,
   onSetCursorA, onSetCursorB,
 }: Props) {
   const [presetName, setPresetName] = useState('Setup');
@@ -128,6 +129,10 @@ export function AcquireToolbar({
         className="px-2 py-1 rounded bg-fob-surface border border-fob-border text-fob-text font-bold text-[11px] hover:bg-fob-border transition-colors"
       >
         PNG
+      </button>
+      <button onClick={onExportSr}
+        className="px-2 py-1 rounded bg-fob-surface border border-fob-border text-fob-text font-bold text-[11px] hover:bg-fob-border transition-colors">
+        SR
       </button>
       <div className="w-px h-5 bg-fob-border mx-1" />
       <button

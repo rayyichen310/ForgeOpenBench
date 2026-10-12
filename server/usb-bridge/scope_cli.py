@@ -27,14 +27,18 @@ async def run(args):
                 payload = base64.b64decode(result['base64']) if 'base64' in result else result['csv'].encode('utf-8')
                 with path.open('xb') as output:
                     output.write(payload)
-                result = {'path': str(path), 'bytes': len(payload), 'settings': result['settings']}
+                result = {key: value for key, value in result.items() if key not in ('base64', 'csv')}
+                result.update(path=str(path), bytes=len(payload))
             print(json.dumps(result, ensure_ascii=False))
             return
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['status', 'set', 'run', 'stop', 'single', 'autoset', 'force', 'clear', 'reference', 'csv', 'png'])
-    parser.add_argument('--params', default='{}', help='Scope state patch as JSON')
-    parser.add_argument('--output', help='New output file for csv/png; existing files are never overwritten')
-    asyncio.run(run(parser.parse_args()))
+    parser.add_argument('action', choices=['status', 'set', 'run', 'stop', 'single', 'autoset', 'force', 'clear', 'reference', 'csv', 'png', 'sr', 'zero', 'zero-reset'])
+    parser.add_argument('--params', default='{}', help='Scope state patch; zero needs {"channel":"ch1","groundConfirmed":true}; zero-reset needs {"channel":"ch1"}')
+    parser.add_argument('--output', help='New output file for csv/png/sr; existing files are never overwritten')
+    args = parser.parse_args()
+    if args.action == 'sr' and not args.output:
+        parser.error('sr requires --output with a new .sr file path')
+    asyncio.run(run(args))
