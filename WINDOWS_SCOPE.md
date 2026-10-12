@@ -192,8 +192,9 @@ The grid always shows ten divisions per axis, so with the trigger-aligned view
 - The live view retains at most 200,000 points and displays at most 200 ms in
   the main plot. Long timebase settings are constrained by those existing limits.
   CSV exports the plotted trace (including display decimation), not every USB byte.
-- Raw voltages use nominal upstream ADC scaling; optional session GND zero
-  correction applies to the display. No gain or EEPROM calibration is written.
+- Raw voltages use nominal upstream ADC scaling; optional GND zero correction
+  (stored per condition, see above) applies to the display. No gain or EEPROM
+  calibration is written.
   CAL capture demonstrates operation, not instrument accuracy or probe compensation.
 
 ## Validation
