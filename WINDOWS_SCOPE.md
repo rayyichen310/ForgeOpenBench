@@ -95,13 +95,23 @@ running acquisition, missing/short captures, non-DC captures, changed capture
 conditions and missing ground confirmation. Ground confirmation is a statement
 about the actual wiring; the software cannot verify it electrically.
 
-`status.zeroCalibration` lists each baseline and its capture provenance;
-`status.zeroActive` indicates whether current conditions match. A baseline applies
-only to its channel, hardware range, probe factor and sample rate. Changing any
-of these suspends it; returning to matching conditions reactivates it. Position
-changes, or V/div changes that leave the hardware range unchanged, retain it.
-Closing/reloading Scope or reconnecting clears calibration; it is not saved in
-presets. After reconnecting, a fresh capture is required even if an old trace remains.
+Each Zero is saved by the bridge in `../calibration/zero-profiles.json` (outside
+the repository), keyed by device model, channel, hardware range, probe factor and
+sample rate; a later Zero for the same condition replaces it. On every connect the
+Scope reloads the saved profiles and applies the one matching the current
+conditions, so a calibration made once for a setting is used again after
+closing the page or reconnecting. Reset deletes only the profile for the current
+condition. A corrupt profile file is reported, not overwritten.
+
+`status.zeroCalibration` lists the active profile per channel with `capturedAt`
+and `origin` (`session` = measured since this connect, `stored` = reloaded,
+`replay` = given with `load-sr`); SR exports record the same fields.
+`status.zeroActive` indicates whether current conditions match. Changing range,
+probe or sample rate switches to the saved profile for the new condition, or to
+none; position changes, or V/div changes that leave the hardware range unchanged,
+keep it. The panel shows the date and asks for a new GND measurement when a
+reloaded profile is older than 30 days; it is still applied. A new Zero always
+needs a fresh GND capture after connecting, even if an old trace remains.
 
 DC samples are corrected before inversion, bandwidth filtering, measurements,
 trigger comparison and Math. CSV and PNG export the displayed result. AC coupling
@@ -163,7 +173,10 @@ bound to the file's range, probe and rate) and a `display` settings patch:
 `view` sets the plot range as wheel zoom/pan would; `png` accepts the same `x`/`y`
 plus `width`/`height` and returns the plot area (`bbox`) and scales. Readouts are
 computed from the loaded window, so frequency values of a short window are not
-signal measurements.
+signal measurements; choose the readouts with
+`measurements --params '{"ch1":["vpp","vrms"],"ch2":["vpp","vrms"]}'`.
+The grid always shows ten divisions per axis, so with the trigger-aligned view
+(no `view` override) each division equals the V/div and s/div settings.
 
 ## Acquisition and interpretation
 

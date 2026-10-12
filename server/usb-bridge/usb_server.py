@@ -34,6 +34,7 @@ import usb.core
 import usb.util
 import websockets
 from scope_sr import build_sr, save_sr
+import zero_store
 from websockets.server import WebSocketServerProtocol
 
 # ---------------------------------------------------------------------------
@@ -1344,8 +1345,25 @@ async def handle_scope_export_sr(_ws, req):
     return {'type': 'scope_sr_saved', **result}
 
 
+async def handle_scope_zero_load(_ws, req):
+    return {'type': 'scope_zero_profiles', 'profiles': await asyncio.to_thread(zero_store.load, req.get('device'))}
+
+
+async def handle_scope_zero_save(_ws, req):
+    profiles = await asyncio.to_thread(zero_store.save, req.get('device'), req.get('channel'), req.get('profile'))
+    return {'type': 'scope_zero_profiles', 'profiles': profiles}
+
+
+async def handle_scope_zero_delete(_ws, req):
+    profiles = await asyncio.to_thread(zero_store.delete, req.get('device'), req.get('channel'), req.get('condition'))
+    return {'type': 'scope_zero_profiles', 'profiles': profiles}
+
+
 HANDLERS = {
     "scope_export_sr":           handle_scope_export_sr,
+    "scope_zero_load":           handle_scope_zero_load,
+    "scope_zero_save":           handle_scope_zero_save,
+    "scope_zero_delete":         handle_scope_zero_delete,
     "scope_register":            handle_scope_register,
     "scope_control":             handle_scope_control,
     "scope_result":              handle_scope_result,

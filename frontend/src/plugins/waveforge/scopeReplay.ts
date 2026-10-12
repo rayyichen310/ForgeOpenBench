@@ -47,7 +47,7 @@ export function replayZero(capture: ScopeCapture, offsets: Partial<Record<ScopeC
     const vertical = channel === 'ch1' ? capture.settings.ch1Vertical : capture.settings.ch2Vertical;
     profiles[channel] = {offsetVolts, probe: vertical.probe, sampleRate: capture.sampleRate,
       hardwareRangeVpp: vDivToVpp(vertical.vDiv / vertical.probe),
-      capturedAt: capture.capturedAt, samples: capture.ch1.length};
+      capturedAt: capture.capturedAt, samples: capture.ch1.length, origin: 'replay'};
   }
   return profiles;
 }

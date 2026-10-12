@@ -34,8 +34,8 @@ import type { ScopeCapture } from './scopeExport';
 import { processChannel, triggerSamples } from "./scopeProcessing";
 import { validateScopePatch } from "./scopeSettings";
 import {ZeroPanel} from './ZeroPanel';
-import {captureZero, estimateZero, zeroMatches, zeroOffset} from './scopeZero';
-import type {ScopeChannel, ZeroCalibrations} from './scopeZero';
+import {captureZero, estimateZero, selectZero, zeroCondition, zeroMatches, zeroOffset} from './scopeZero';
+import type {ScopeChannel, StoredZero, ZeroCalibration, ZeroCalibrations} from './scopeZero';
 import {parseScopeSr, replayWindow, replayZero} from './scopeReplay';
 import type {ReplayWindow} from './scopeReplay';
 
@@ -90,11 +90,27 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
   const [zeroCalibration, setZeroCalibration] = useState<ZeroCalibrations>({});
   const zeroRef = useRef<ZeroCalibrations>({});
   const freshZeroCaptureRef = useRef(false);
+  // Saved GND profiles for the connected model; the active one per channel follows the current settings.
+  const [zeroStore, setZeroStore] = useState<StoredZero[]>([]);
+  const sessionZeroRef = useRef(new Set<string>());
+  // An SR replay brings its own zero; saved profiles take over again on the next Run.
+  const [zeroFromReplay, setZeroFromReplay] = useState(false);
+  const zeroDevice = () => transport.deviceInfo?.name ?? 'unknown device';
   useEffect(() => {
-    // A reconnect may represent another instrument; never restore an old GND baseline.
+    // Reload from the bridge on every (re)connect rather than keeping values from another session.
     zeroRef.current = {};
     freshZeroCaptureRef.current = false;
+    sessionZeroRef.current.clear();
     setZeroCalibration({});
+    setZeroStore([]);
+    setZeroFromReplay(false);
+    if (!connected) return;
+    let current = true;
+    transport.loadZeroProfiles(zeroDevice())
+      .then(profiles => { if (current) setZeroStore(profiles.map(profile => ({...profile, origin: 'stored'}))); })
+      .catch(error => notifyError(`Zero profiles not loaded: ${error instanceof Error ? error.message : String(error)}`));
+    return () => { current = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected, transport]);
   const [lastSrPath, setLastSrPath] = useState<string | null>(null);
   const mathBuf = useRef<number[]>([]);
@@ -205,6 +221,13 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
 
   // Sample rate (shared)
   const [sampleRate, setSampleRate] = useState(persisted?.sampleRate ?? 4_000_000);
+
+  useEffect(() => {
+    if (zeroFromReplay) return;
+    const selected = selectZero(zeroStore, ch1Vertical, ch2Vertical, sampleRate);
+    zeroRef.current = selected;
+    setZeroCalibration(selected);
+  }, [zeroStore, zeroFromReplay, ch1Vertical, ch2Vertical, sampleRate]);
 
   // Named scope presets
   const [presets, setPresets] = useState<ScopePreset[]>(() => loadPresets());
@@ -920,6 +943,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
       return;
     }
     captureRef.current = null;
+    setZeroFromReplay(false);
     ch1Buf.current = [];
     ch2Buf.current = [];
     mathBuf.current = [];
@@ -1257,24 +1281,37 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
   const handleSetCursorA = () => setCursorAtCenter(setCursorA);
   const handleSetCursorB = () => setCursorAtCenter(setCursorB);
 
-  const updateZero = (action: 'zero' | 'zero-reset', params: Record<string, unknown>) => {
+  const zeroKey = (channel: ScopeChannel, profile: ZeroCalibration) =>
+    [channel, profile.hardwareRangeVpp, profile.probe, profile.sampleRate, profile.capturedAt].join('|');
+  const updateZero = async (action: 'zero' | 'zero-reset', params: Record<string, unknown>) => {
     if (!connected) throw new Error('Scope is not connected');
     const channel = params.channel;
     if (channel !== 'ch1' && channel !== 'ch2') throw new Error('Select channel ch1 or ch2');
     if (runningRef.current) throw new Error('Stop acquisition before changing zero calibration');
-    const next = {...zeroRef.current};
+    const vertical = channel === 'ch1' ? ch1VerticalRef.current : ch2VerticalRef.current;
+    let stored: StoredZero[];
     if (action === 'zero') {
       if (params.groundConfirmed !== true) throw new Error('Confirm the probe tip and ground clip are connected to the same GND');
-      next[channel] = estimateZero(freshZeroCaptureRef.current ? captureRef.current : null, channel,
-        channel === 'ch1' ? ch1VerticalRef.current : ch2VerticalRef.current, sampleRateRef.current);
-    } else delete next[channel];
-    zeroRef.current = next;
-    setZeroCalibration(next);
-    return {accepted:true, channel, calibration:next[channel] ?? null};
+      const profile = estimateZero(freshZeroCaptureRef.current ? captureRef.current : null, channel, vertical, sampleRateRef.current);
+      stored = await transport.saveZeroProfile(zeroDevice(), channel, profile);
+      sessionZeroRef.current.add(zeroKey(channel, profile));
+    } else {
+      // Reset forgets the saved profile for the current range, probe and sample rate only.
+      stored = await transport.deleteZeroProfile(zeroDevice(), channel, zeroCondition(vertical, sampleRateRef.current));
+    }
+    const next = stored.map(entry => ({...entry,
+      origin: sessionZeroRef.current.has(zeroKey(entry.channel, entry)) ? 'session' as const : 'stored' as const}));
+    const selected = selectZero(next, ch1VerticalRef.current, ch2VerticalRef.current, sampleRateRef.current);
+    // Apply now so the reply and readouts agree; the selection effect reaches the same result on render.
+    zeroRef.current = selected;
+    setZeroCalibration(selected);
+    setZeroFromReplay(false);
+    setZeroStore(next);
+    return {accepted:true, channel, calibration:selected[channel] ?? null};
   };
   const uiZero = (action: 'zero' | 'zero-reset', channel: ScopeChannel) => {
-    try { updateZero(action, {channel, groundConfirmed:true}); }
-    catch (error) { notifyError(error instanceof Error ? error.message : String(error)); }
+    void updateZero(action, {channel, groundConfirmed:true})
+      .catch(error => notifyError(error instanceof Error ? error.message : String(error)));
   };
   const zeroActive = {
     ch1:zeroMatches(zeroCalibration.ch1, ch1Vertical, sampleRate),
@@ -1288,6 +1325,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
     zeroRef.current = zero;
     freshZeroCaptureRef.current = false;
     captureRef.current = capture;
+    setZeroFromReplay(true);
     setZeroCalibration(zero);
     setCh1Vertical({...s.ch1Vertical, ...display.ch1Vertical});
     setCh2Vertical({...s.ch2Vertical, ...display.ch2Vertical});

@@ -1,5 +1,6 @@
 import {useState} from 'react';
-import type {ScopeChannel, ZeroCalibrations} from './scopeZero';
+import {ZERO_STALE_DAYS, zeroAgeDays} from './scopeZero';
+import type {ScopeChannel, ZeroCalibration, ZeroCalibrations} from './scopeZero';
 
 interface Props {
   profiles: ZeroCalibrations;
@@ -7,6 +8,16 @@ interface Props {
   disabled: boolean;
   onZero: (channel: ScopeChannel) => void;
   onReset: (channel: ScopeChannel) => void;
+}
+
+export function describeZero(profile: ZeroCalibration, active: boolean, now = Date.now()): string {
+  const date = profile.capturedAt.slice(0, 10);
+  const age = zeroAgeDays(profile, now);
+  const source = profile.origin === 'replay' ? 'from SR replay'
+    : profile.origin === 'stored' ? `saved ${date}, ${age} d ago` : `measured ${date}`;
+  const stale = profile.origin === 'stored' && age > ZERO_STALE_DAYS
+    ? ` — older than ${ZERO_STALE_DAYS} days, recalibrate` : '';
+  return `subtract ${profile.offsetVolts.toFixed(4)} V (${active ? 'active' : 'settings mismatch'}; ${source})${stale}`;
 }
 
 export function ZeroPanel({profiles, active, disabled, onZero, onReset}: Props) {
@@ -21,8 +32,8 @@ export function ZeroPanel({profiles, active, disabled, onZero, onReset}: Props) 
     </label>
     {(['ch1','ch2'] as const).map(channel=><div key={channel} className="flex flex-col gap-1">
       <span>{channel.toUpperCase()}: {profiles[channel]
-        ? `subtract ${profiles[channel]!.offsetVolts.toFixed(4)} V (${active[channel] ? 'active' : 'settings mismatch'})`
-        : 'not calibrated'}</span>
+        ? describeZero(profiles[channel]!, active[channel])
+        : 'not calibrated for this range, probe and rate'}</span>
       <div className="flex gap-1">
         <button disabled={disabled || !confirmed} className="border border-fob-border rounded px-2 disabled:opacity-40"
           onClick={()=>{onZero(channel);setConfirmed(false);}}>Zero {channel.toUpperCase()}</button>
@@ -30,6 +41,6 @@ export function ZeroPanel({profiles, active, disabled, onZero, onReset}: Props) 
           onClick={()=>onReset(channel)}>Reset {channel.toUpperCase()} zero</button>
       </div>
     </div>)}
-    <p className="text-fob-text-dim">SR samples stay uncorrected. Recalibrate after reopening Scope.</p>
+    <p className="text-fob-text-dim">Each zero is saved per range, probe and sample rate and reloaded on connect. SR samples stay uncorrected.</p>
   </div>;
 }

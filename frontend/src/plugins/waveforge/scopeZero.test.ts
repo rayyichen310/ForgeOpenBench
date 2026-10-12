@@ -36,3 +36,22 @@ it('rejects missing, short, non-DC and mismatched captures',()=>{
   expect(()=>estimateZero(capture,'ch1',vertical,12e6)).toThrow(/settings/i);
   expect(()=>estimateZero(capture,'ch1',{...vertical,probe:1},1e6)).toThrow(/settings/i);
 });
+
+it('selects the saved profile for each channel under the current conditions',async()=>{
+  const {selectZero}=await import('./scopeZero');
+  const entry={device:'d',offsetVolts:0.24,hardwareRangeVpp:1,probe:10 as const,sampleRate:1e6,capturedAt:'2026-10-10T00:00:00Z',samples:4002};
+  const store=[{...entry,channel:'ch1' as const},{...entry,channel:'ch2' as const,offsetVolts:0.21,sampleRate:12e6}];
+  expect(selectZero(store,vertical,vertical,1e6)).toEqual({ch1:{offsetVolts:0.24,hardwareRangeVpp:1,probe:10,sampleRate:1e6,
+    capturedAt:'2026-10-10T00:00:00Z',samples:4002}});
+  expect(selectZero(store,vertical,vertical,12e6).ch2?.offsetVolts).toBe(0.21);
+  expect(selectZero(store,{...vertical,probe:1},vertical,1e6)).toEqual({});
+});
+
+it('marks saved profiles older than 30 days for recalibration',async()=>{
+  const {describeZero}=await import('./ZeroPanel');
+  const profile={offsetVolts:0.2446,hardwareRangeVpp:1,probe:10,sampleRate:1e6,capturedAt:'2026-10-10T00:00:00Z',samples:4002};
+  const day=86_400_000, at=Date.parse(profile.capturedAt);
+  expect(describeZero({...profile,origin:'stored'},true,at+3*day)).toBe('subtract 0.2446 V (active; saved 2026-10-10, 3 d ago)');
+  expect(describeZero({...profile,origin:'stored'},true,at+31*day)).toContain('older than 30 days, recalibrate');
+  expect(describeZero({...profile,origin:'session'},true,at+31*day)).not.toContain('recalibrate');
+});

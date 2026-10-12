@@ -3,6 +3,7 @@ import type {
   UsbDataHandler, UsbConnectionListener,
 } from "./usbTypes";
 import { wsUrl } from "../../core/ws_url";
+import type { ScopeChannel, StoredZero, ZeroCalibration, ZeroCondition } from "./scopeZero";
 
 const USB_BRIDGE_URL = wsUrl("/", 8766);
 const RECONNECT_BASE_MS = 500;
@@ -269,6 +270,18 @@ export class UsbTransport implements IUsbTransport {
 
   async exportScopeSr(snapshot: Record<string, unknown>): Promise<{path: string}> {
     return await this._rpc('scope_export_sr', {snapshot}) as {path: string};
+  }
+
+  async loadZeroProfiles(device: string): Promise<StoredZero[]> {
+    return (await this._rpc('scope_zero_load', {device}) as {profiles: StoredZero[]}).profiles;
+  }
+
+  async saveZeroProfile(device: string, channel: ScopeChannel, profile: ZeroCalibration): Promise<StoredZero[]> {
+    return (await this._rpc('scope_zero_save', {device, channel, profile}) as {profiles: StoredZero[]}).profiles;
+  }
+
+  async deleteZeroProfile(device: string, channel: ScopeChannel, condition: ZeroCondition): Promise<StoredZero[]> {
+    return (await this._rpc('scope_zero_delete', {device, channel, condition}) as {profiles: StoredZero[]}).profiles;
   }
 
   async sendTestSignal(frequency: string): Promise<void> {
