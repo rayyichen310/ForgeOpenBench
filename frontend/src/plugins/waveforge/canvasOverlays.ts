@@ -7,27 +7,17 @@ export const MAX_PHOSPHOR_TRACES = 8;
 /* ── Trigger level line ─────────────────────────────────────────────── */
 export interface TriggerLineDeps {
   getLevel: () => number;
-  getSource: () => "ch1" | "ch2" | "ext" | "acline";
-  getVdiv: () => number;
-  getPos: (source: "ch1" | "ch2" | "ext" | "acline") => number;
   viewMode: string;
 }
 export function makeDrawTriggerLine(deps: TriggerLineDeps): (u: uPlot) => void {
   return (u) => {
     if (deps.viewMode !== "time") return;
     const level = deps.getLevel();
-    const posOff = deps.getPos(deps.getSource()) * deps.getVdiv();
     const ctx = u.ctx;
-    const plotTop = u.bbox.top;
-    const plotH = u.bbox.height;
     const plotLeft = u.bbox.left;
     const plotRight = plotLeft + u.bbox.width;
-    const yRange = deps.getVdiv() * 10;
-    const vmin = -yRange / 2 + posOff;
-    const vmax = yRange / 2 + posOff;
-    const yScale = plotH / (vmax - vmin);
-    const yOfs = plotTop + plotH;
-    const y = yOfs - (level - vmin) * yScale;
+    // Follow the plot's current y scale so the line stays on its level after pan/zoom.
+    const y = u.valToPos(level, "y", true);
     ctx.save();
     ctx.strokeStyle = "#FF00FF";
     ctx.lineWidth = 2;

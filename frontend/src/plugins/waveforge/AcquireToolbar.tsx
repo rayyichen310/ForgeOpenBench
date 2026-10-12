@@ -31,6 +31,7 @@ interface Props {
   onExportCsv: () => void;
   onExportPng: () => void;
   onExportSr: () => void;
+  onOpenSr: (file: File) => void;
   onSetCursorA: () => void;
   onSetCursorB: () => void;
 }
@@ -42,7 +43,7 @@ export function AcquireToolbar({
   onSaveRef, onClearRef, hasRef,
   sampleRateLabel, sDivLabel, connected,
   presets, selectedPreset, onSelectPreset, onSavePreset, onLoadPreset, onDeletePreset,
-  onExportPresets, onImportPresets, onExportCsv, onExportPng, onExportSr,
+  onExportPresets, onImportPresets, onExportCsv, onExportPng, onExportSr, onOpenSr,
   onSetCursorA, onSetCursorB,
 }: Props) {
   const [presetName, setPresetName] = useState('Setup');
@@ -134,6 +135,11 @@ export function AcquireToolbar({
         className="px-2 py-1 rounded bg-fob-surface border border-fob-border text-fob-text font-bold text-[11px] hover:bg-fob-border transition-colors">
         SR
       </button>
+      <label className="px-2 py-1 rounded bg-fob-surface border border-fob-border text-fob-text font-bold text-[11px] hover:bg-fob-border transition-colors cursor-pointer">
+        Open SR
+        <input type="file" accept=".sr" aria-label="Open SR" className="hidden"
+          onChange={(e) => { const file = e.target.files?.[0]; if (file) onOpenSr(file); e.target.value = ""; }} />
+      </label>
       <div className="w-px h-5 bg-fob-border mx-1" />
       <button
         onClick={onSetCursorA}

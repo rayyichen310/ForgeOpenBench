@@ -146,6 +146,25 @@ Read an existing file without releasing USB:
 Direct hardware capture with sigrok remains a separate operation requiring the
 bridge to release USB. Saving a snapshot does not provide continuous recording.
 
+## SR replay
+
+**Open SR** (or `load-sr --input <file.sr>`) shows a Scope SR as a held, stopped
+capture with its stored settings; acquisition stops first and USB is not used.
+Only files with `scope-settings.json` (written by this Scope) are accepted.
+The CLI may add `window` (`startS`/`endS` seconds from the first sample, and
+`timeZeroS` shown as 0 on the time axis), `zero` (per-channel `offsetVolts`
+bound to the file's range, probe and rate) and a `display` settings patch:
+
+```powershell
+& $python server/usb-bridge/scope_cli.py load-sr --input new-trace.sr --params '{"window":{"startS":0.004,"endS":0.0049,"timeZeroS":0.0042},"zero":{"ch1":0.2575}}'
+& $python server/usb-bridge/scope_cli.py view --params '{"x":[-0.0002,0.0006],"y":[-0.5,4.5]}'
+```
+
+`view` sets the plot range as wheel zoom/pan would; `png` accepts the same `x`/`y`
+plus `width`/`height` and returns the plot area (`bbox`) and scales. Readouts are
+computed from the loaded window, so frequency values of a short window are not
+signal measurements.
+
 ## Acquisition and interpretation
 
 - Set the software probe factor to match the physical switch. Hardware ranges are

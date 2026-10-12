@@ -8,10 +8,18 @@ from pathlib import Path
 from websockets.asyncio.client import connect
 
 
+def params(args):
+    value = json.loads(args.params)
+    if args.action == 'load-sr':
+        # The Scope page parses the SR itself, exactly as when the file is opened in the browser.
+        value['data'] = base64.b64encode(Path(args.input).read_bytes()).decode('ascii')
+    return value
+
+
 async def run(args):
     async with connect('ws://127.0.0.1:8766', max_size=8_000_000) as ws:
         await ws.send(json.dumps({'type': 'scope_control', 'req_id': 'cli',
-                                  'action': args.action, 'params': json.loads(args.params)}))
+                                  'action': args.action, 'params': params(args)}))
         while True:
             response = await asyncio.wait_for(ws.recv(), 20)
             if isinstance(response, bytes):
@@ -35,10 +43,13 @@ async def run(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['status', 'set', 'run', 'stop', 'single', 'autoset', 'force', 'clear', 'reference', 'csv', 'png', 'sr', 'zero', 'zero-reset'])
-    parser.add_argument('--params', default='{}', help='Scope state patch; zero needs {"channel":"ch1","groundConfirmed":true}; zero-reset needs {"channel":"ch1"}')
+    parser.add_argument('action', choices=['status', 'set', 'run', 'stop', 'single', 'autoset', 'force', 'clear', 'reference', 'csv', 'png', 'sr', 'zero', 'zero-reset', 'load-sr', 'view'])
+    parser.add_argument('--params', default='{}', help='Scope state patch; zero needs {"channel":"ch1","groundConfirmed":true}; zero-reset needs {"channel":"ch1"}; load-sr accepts window, zero and display; view and png accept x and y ranges; png also width and height')
+    parser.add_argument('--input', help='Scope SR file to show as a held capture (load-sr)')
     parser.add_argument('--output', help='New output file for csv/png/sr; existing files are never overwritten')
     args = parser.parse_args()
     if args.action == 'sr' and not args.output:
         parser.error('sr requires --output with a new .sr file path')
+    if args.action == 'load-sr' and not args.input:
+        parser.error('load-sr requires --input with an existing .sr file')
     asyncio.run(run(args))

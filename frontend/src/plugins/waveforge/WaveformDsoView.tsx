@@ -35,6 +35,8 @@ import { validateScopePatch } from "./scopeSettings";
 import {ZeroPanel} from './ZeroPanel';
 import {captureZero, estimateZero, zeroMatches, zeroOffset} from './scopeZero';
 import type {ScopeChannel, ZeroCalibrations} from './scopeZero';
+import {parseScopeSr, replayWindow, replayZero} from './scopeReplay';
+import type {ReplayWindow} from './scopeReplay';
 
 /* ── Props ─────────────────────────────────────────────────────────── */
 interface Props {
@@ -81,6 +83,9 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
   const ch1Buf = useRef<number[]>([]);
   const ch2Buf = useRef<number[]>([]);
   const captureRef = useRef<ScopeCapture | null>(null);
+  // Bumped when a held capture is replaced outside acquisition (SR replay) so it is redrawn.
+  const [heldVersion, setHeldVersion] = useState(0);
+  const heldRenderedRef = useRef<(() => void) | null>(null);
   const [zeroCalibration, setZeroCalibration] = useState<ZeroCalibrations>({});
   const zeroRef = useRef<ZeroCalibrations>({});
   const freshZeroCaptureRef = useRef(false);
@@ -365,9 +370,6 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
     // Canvas overlay hooks (factory functions capture latest refs)
     const drawTriggerLine = makeDrawTriggerLine({
       getLevel: () => triggerRef.current.level,
-      getSource: () => triggerRef.current.source,
-      getVdiv: () => ch1Vertical.vDiv,
-      getPos: (src) => (src === "ch2" ? ch2Vertical.position : ch1Vertical.position),
       viewMode: mode,
     });
     const drawPhosphor = makeDrawPhosphor({
@@ -431,7 +433,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
         ],
         series: [
           {},
-          { stroke: "#F59E0B", width: 1.5, label: "CH1" },
+          { stroke: "#F59E0B", width: 1.5, label: "CH1", show: ch1Vertical.enabled },
           { stroke: "#60A5FA", width: 1.5, label: "CH2", show: ch2Vertical.enabled },
           { stroke: "#4ADE80", width: 1.5, label: "MATH", show: math.enabled },
         ],
@@ -467,7 +469,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
           ],
           series: [
             {},
-            { stroke: "#F59E0B", width: 1, label: "CH1" },
+            { stroke: "#F59E0B", width: 1, label: "CH1", show: ch1Vertical.enabled },
             { stroke: "#60A5FA", width: 1, label: "CH2", show: ch2Vertical.enabled },
             { stroke: "#4ADE80", width: 1, label: "MATH", show: math.enabled },
           ],
@@ -477,7 +479,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
         overviewPlotRef.current = new uPlot(oOpts, [[], [], [], []], overviewContainer);
       }
     }
-  }, [vpp, ch1Vertical.vDiv, ch2Vertical.vDiv, ch2Vertical.enabled, math.enabled, ch1Vertical.position, ch2Vertical.position, horizontal.position, horizontal.sDiv, viewMode]);
+  }, [vpp, ch1Vertical.vDiv, ch2Vertical.vDiv, ch1Vertical.enabled, ch2Vertical.enabled, math.enabled, ch1Vertical.position, ch2Vertical.position, horizontal.position, horizontal.sDiv, viewMode]);
 
   useEffect(() => {
     const div = plotDivRef.current;
@@ -897,8 +899,9 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
     setCh2Meas(calcMeasurements(c2, capture.sampleRate));
     phosphorTraces.current = [];
     avgAccumCount.current = 0; avgBuf1.current = []; avgBuf2.current = [];
-    renderNow(renderContext(capture.sampleRate), c1, c2, performance.now());
-  }, [zeroCalibration, sampleRate, ch1Vertical, ch2Vertical, buildPlot, renderContext]);
+    renderNow(renderContext(capture.sampleRate), c1, c2, performance.now(), {timeOffsetS: capture.timeOffsetS});
+  }, [zeroCalibration, sampleRate, ch1Vertical, ch2Vertical, buildPlot, renderContext, heldVersion]);
+  useEffect(() => { heldRenderedRef.current?.(); heldRenderedRef.current = null; }, [heldVersion]);
 
   // Start / stop
   const start = useCallback(async () => {
@@ -1277,6 +1280,29 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
     ch2:zeroMatches(zeroCalibration.ch2, ch2Vertical, sampleRate),
   };
 
+  // Show a saved SR as a held (stopped) capture; no USB acquisition is involved.
+  const loadReplay = async (capture: ScopeCapture, zero: ZeroCalibrations, display: Partial<ScopePreset['state']> = {}) => {
+    if (runningRef.current || dataOffRef.current) await stop(true);
+    const s = capture.settings;
+    zeroRef.current = zero;
+    freshZeroCaptureRef.current = false;
+    captureRef.current = capture;
+    setZeroCalibration(zero);
+    setCh1Vertical({...s.ch1Vertical, ...display.ch1Vertical});
+    setCh2Vertical({...s.ch2Vertical, ...display.ch2Vertical});
+    setHorizontal({...s.horizontal, ...display.horizontal});
+    setTrigger({...s.trigger, ...display.trigger});
+    setMath({...s.math, ...display.math});
+    setPhosphorEnabled(false);
+    setSampleRate(capture.sampleRate);
+    setAcquireMode('stopped');
+    await new Promise<void>(resolve => { heldRenderedRef.current = resolve; setHeldVersion(v => v + 1); });
+  };
+  const handleOpenSr = async (file: File) => {
+    try { await loadReplay(replayWindow(await parseScopeSr(await file.arrayBuffer())), {}); }
+    catch (error) { notifyError(error instanceof Error ? error.message : String(error)); }
+  };
+
   scopeControlRef.current = async (action, params) => {
     const status = () => ({connected, acquireMode: acquireModeRef.current, sampleRate, ch1Vertical, ch2Vertical,
       horizontal, trigger, math, phosphorEnabled, ch1Meas, ch2Meas, samples: ch1Buf.current.length,
@@ -1284,6 +1310,35 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
     if (action === 'status') return status();
     if (action === 'sr') return encodeScopeCapture(captureRef.current);
     if (action === 'zero' || action === 'zero-reset') return updateZero(action, params);
+    if (action === 'load-sr') {
+      if (typeof params.data !== 'string') throw new Error('load-sr needs base64 SR data');
+      const bytes = Uint8Array.from(atob(params.data), c => c.charCodeAt(0));
+      const display = (params.display ?? {}) as Partial<ScopePreset['state']>;
+      validateScopePatch(display);
+      const capture = replayWindow(await parseScopeSr(bytes.buffer), params.window as ReplayWindow | undefined);
+      await loadReplay(capture, replayZero(capture, (params.zero ?? {}) as Partial<Record<ScopeChannel, number>>), display);
+      return {accepted: true, samples: capture.ch1.length, sampleRate: capture.sampleRate,
+        timeOffsetS: capture.timeOffsetS, zeroCalibration: zeroRef.current};
+    }
+    if (action === 'png' || action === 'view') {
+      const plot = plotRef.current;
+      const canvas = plot?.root.querySelector('canvas');
+      if (!plot || !canvas) throw new Error('No plot to export');
+      const {width, height, x, y} = params as {width?: number; height?: number; x?: [number, number]; y?: [number, number]};
+      if (width && height && action === 'png') plot.setSize({width, height});
+      // Same effect as wheel zoom / drag pan on a held capture.
+      if (x) plot.setScale('x', {min: x[0], max: x[1]});
+      if (y) plot.setScale('y', {min: y[0], max: y[1]});
+      // uPlot commits size/scale changes in a microtask; draw before reading pixels.
+      await new Promise(resolve => setTimeout(resolve, 0));
+      if (action === 'view') return {accepted: true, scales: {x: [plot.scales.x.min, plot.scales.x.max], y: [plot.scales.y.min, plot.scales.y.max]}};
+      const result = {base64: canvas.toDataURL('image/png').split(',')[1], canvas: [canvas.width, canvas.height],
+        pxRatio: window.devicePixelRatio, bbox: {...plot.bbox},
+        scales: {x: [plot.scales.x.min, plot.scales.x.max], y: [plot.scales.y.min, plot.scales.y.max]}, settings: status()};
+      const div = plotDivRef.current;
+      if (width && height && div) plot.setSize({width: div.offsetWidth, height: div.offsetHeight});
+      return result;
+    }
     if (action === 'set') {
       validateScopePatch(params);
       const patch = params as Partial<ScopePreset['state']>;
@@ -1312,10 +1367,6 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
       if (viewMode === 'time' && ch2Vertical.enabled) { names.push('CH2(V)'); indices.push(2); }
       if (viewMode === 'time' && math.enabled) { names.push('MATH'); indices.push(3); }
       return {csv: traceCsv(plotRef.current, names, viewMode, indices), settings: status()};
-    } else if (action === 'png') {
-      const canvas = plotRef.current?.root.querySelector('canvas');
-      if (!canvas) throw new Error('No plot to export');
-      return {base64: canvas.toDataURL('image/png').split(',')[1], settings: status()};
     } else throw new Error(`Unknown scope action: ${action}`);
     return {accepted: true};
   };
@@ -1364,6 +1415,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
             }
           })();
         }}
+        onOpenSr={file => { void handleOpenSr(file); }}
         onSetCursorA={handleSetCursorA}
         onSetCursorB={handleSetCursorB}
       />

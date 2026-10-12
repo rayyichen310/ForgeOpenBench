@@ -62,9 +62,9 @@ export function renderNow(
   ch1: number[],
   ch2: number[],
   nowPerf: number,
-  opts?: { phosphorOnly?: boolean }
+  opts?: { phosphorOnly?: boolean; timeOffsetS?: number }
 ): void {
-  const force = () => renderNow(ctx, ch1, ch2, nowPerf);
+  const force = () => renderNow(ctx, ch1, ch2, nowPerf, opts);
   ctx.forceTriggerRef.current = force;
   ctx.plotThrottleRef.current = nowPerf;
   const plot = ctx.plotRef.current;
@@ -125,6 +125,7 @@ export function renderNow(
 
   // time mode
   const dt = 1 / (ctx.sampleRateRef.current || 4_000_000);
+  const t0 = opts?.timeOffsetS ?? 0;
   const isPeak = ctx.horizontalRef.current.acquireMode === "peak";
   const r1 = ch1, r2 = ch2;
   const rn = r1.length;
@@ -213,7 +214,7 @@ export function renderNow(
       const times: number[] = [], channels: number[][] = [[], [], []];
       for (let i = 0; i < sn; i += binSize) {
         const end = Math.min(sn, i + binSize);
-        times.push((startIdx + i) * dt, (startIdx + end - 1) * dt);
+        times.push((startIdx + i) * dt + t0, (startIdx + end - 1) * dt + t0);
         [s1, s2, sM].forEach((values, channel) => {
           let min = values[i], max = values[i];
           for (let j = i + 1; j < end; j++) { min = Math.min(min, values[j]); max = Math.max(max, values[j]); }
@@ -222,13 +223,13 @@ export function renderNow(
       }
       plot.setData([new Float64Array(times), ...channels.map(values => new Float64Array(values))] as uPlot.AlignedData);
     } else if (!doDecimate) {
-      xs = Float64Array.from({ length: sn }, (_, i) => (startIdx + i) * dt);
+      xs = Float64Array.from({ length: sn }, (_, i) => (startIdx + i) * dt + t0);
       ys1Arr = new Float64Array(s1); ys2Arr = new Float64Array(s2); ysMArr = new Float64Array(sM);
       plot.setData([xs, ys1Arr, ys2Arr, ysMArr]);
     } else {
       xs = new Float64Array(m); ys1Arr = new Float64Array(m); ys2Arr = new Float64Array(m); ysMArr = new Float64Array(m);
       for (let i = 0, j = 0; i < sn; i += step, j++) {
-        xs[j] = (startIdx + i) * dt; ys1Arr[j] = s1[i]; ys2Arr[j] = s2[i]; ysMArr[j] = sM[i];
+        xs[j] = (startIdx + i) * dt + t0; ys1Arr[j] = s1[i]; ys2Arr[j] = s2[i]; ysMArr[j] = sM[i];
       }
       plot.setData([xs, ys1Arr, ys2Arr, ysMArr]);
     }
@@ -236,7 +237,7 @@ export function renderNow(
     const ov = ctx.overviewPlotRef.current;
     if (ov) {
       const ovLen = rn - fullStartIdx;
-      const xsOv = Float64Array.from({ length: ovLen }, (_, i) => (fullStartIdx + i) * dt);
+      const xsOv = Float64Array.from({ length: ovLen }, (_, i) => (fullStartIdx + i) * dt + t0);
       ov.setData([xsOv, new Float64Array(r1.slice(fullStartIdx)), new Float64Array(r2.slice(fullStartIdx)), new Float64Array(mathArr.slice(fullStartIdx))]);
     }
     // Force scale during acquisition
@@ -250,11 +251,11 @@ export function renderNow(
     let dataMax: number;
     if (alignTrigger && triggerTime >= 0) {
       const windowSize = liveWindowSamples * dt;
-      dataMin = triggerTime - windowSize * 0.25;
-      dataMax = triggerTime + windowSize * 0.75;
+      dataMin = triggerTime + t0 - windowSize * 0.25;
+      dataMax = triggerTime + t0 + windowSize * 0.75;
     } else {
-      dataMin = sn > 0 ? startIdx * dt : 0;
-      dataMax = sn > 0 ? (startIdx + (m - 1) * step) * dt : 0;
+      dataMin = sn > 0 ? startIdx * dt + t0 : 0;
+      dataMax = sn > 0 ? (startIdx + (m - 1) * step) * dt + t0 : 0;
     }
     const range = dataMax - dataMin;
     const delay = (ctx.horizontalRef.current.position / 100) * range;

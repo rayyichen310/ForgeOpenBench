@@ -11,6 +11,8 @@ export interface ScopeCapture {
   ch1: number[];
   ch2: number[];
   zeroCalibration?: CaptureZeroCalibration;
+  /** Replay only: added to sample times so the axis keeps the chosen SR time origin. */
+  timeOffsetS?: number;
 }
 
 export function encodeScopeCapture(capture: ScopeCapture | null) {
