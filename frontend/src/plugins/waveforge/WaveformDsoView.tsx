@@ -1490,9 +1490,6 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
             onCh2Change={setCh2Vertical}
             disabled={false}
           />
-          <ZeroPanel profiles={zeroCalibration} active={zeroActive}
-            disabled={!connected || (acquireMode !== 'stopped' && acquireMode !== 'single-held')}
-            onZero={channel=>uiZero('zero',channel)} onReset={channel=>uiZero('zero-reset',channel)} />
           <HorizontalPanel
             state={horizontal}
             onChange={setHorizontal}
@@ -1506,6 +1503,9 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
             onSet50Percent={handleSetTrigger50Percent}
             disabled={false}
           />
+          <ZeroPanel profiles={zeroCalibration} active={zeroActive}
+            disabled={!connected || (acquireMode !== 'stopped' && acquireMode !== 'single-held')}
+            onZero={channel=>uiZero('zero',channel)} onReset={channel=>uiZero('zero-reset',channel)} />
           <MathPanel
             state={math}
             onChange={setMath}
