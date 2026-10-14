@@ -1,5 +1,14 @@
 # Forge Open Bench
 
+> [!NOTE]
+> **This is a fork of [vailuc/ForgeOpenBench](https://github.com/vailuc/ForgeOpenBench).**
+> It adds native Windows support for the Hantek 6022BL in scope (DSO) mode: WinUSB capture
+> without sigrok, a CLI that drives the open Scope view, per-channel GND zero calibration,
+> and saving and replaying sigrok `.sr` files. Setup, usage, and test coverage are in
+> [WINDOWS_SCOPE.md](WINDOWS_SCOPE.md). Tested on Windows 11 with a 6022BL only; logic
+> analyzer mode on Windows and the other plugins are untested. The Linux paths are unchanged,
+> and the rest of this README is upstream's.
+
 > **Your bench. Your browser. Your data.**  
 > A local-first hardware instrumentation workbench that turns a laptop, Raspberry Pi, or single-board computer into a proper electronics lab — no cloud, no telemetry, no subscriptions, no account required. A phone or tablet on the same network can use the web UI as a remote display, but the FOB server must run on a real PC or SBC.
 
