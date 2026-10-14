@@ -31,6 +31,10 @@
   --fob-red:           #FF3333;
   --fob-yellow:        #FFCC00;
   --fob-blue:          #5B92E5;
+
+  /* Plot grid; set on :root so every dark skin keeps these */
+  --fob-plot-grid:     #3A3A52;
+  --fob-plot-grid-dim: #1A1A2E;
 }
 
 /* Forge Light */
@@ -52,6 +56,9 @@
   --fob-red:           #CC2222;
   --fob-yellow:        #AA8800;
   --fob-blue:          #2A6CBF;
+
+  --fob-plot-grid:     #D0D0DA;
+  --fob-plot-grid-dim: #E8E8EF;
 }
 
 /* LCARS — authentic TNG/DS9/VOY multi-colour palette */

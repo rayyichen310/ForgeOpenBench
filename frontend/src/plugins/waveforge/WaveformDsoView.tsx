@@ -62,12 +62,24 @@ function saveScopeState(state: Record<string, unknown>) {
   try { sessionStorage.setItem(SCOPE_STATE_KEY, JSON.stringify(state)); } catch {}
 }
 
+// Canvas colours are read once per build, so the plot must rebuild when the skin changes.
+function useSkin() {
+  const [skin, setSkin] = useState(() => document.documentElement.dataset.skin);
+  useEffect(() => {
+    const observer = new MutationObserver(() => setSkin(document.documentElement.dataset.skin));
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-skin"] });
+    return () => observer.disconnect();
+  }, []);
+  return skin;
+}
+
 /* ── Main Component ────────────────────────────────────────────────── */
 export function WaveformDsoView({ transport, isActive, connected, resetting }: Props) {
   const plotDivRef = useRef<HTMLDivElement>(null);
   const plotRef = useRef<uPlot | null>(null);
   const overviewDivRef = useRef<HTMLDivElement>(null);
   const overviewPlotRef = useRef<uPlot | null>(null);
+  const skin = useSkin();
 
   // Acquire state machine lite
   type AcquireMode = "stopped" | "running" | "single-armed" | "single-held" | "rolling" | "averaging";
@@ -409,6 +421,8 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
     const drawCursors = makeDrawCursors({ cursorARef, cursorBRef, enabledRef:cursorsEnabledRef });
     const drawFftPeaks = makeDrawFftPeaks({ enabledRef: fftPeaksEnabledRef });
 
+    const css = getComputedStyle(document.documentElement);
+    const grid = { major: css.getPropertyValue("--fob-plot-grid"), dim: css.getPropertyValue("--fob-plot-grid-dim") };
     let opts: uPlot.Options;
 
     if (mode === "fft") {
@@ -417,8 +431,8 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
         padding: [0, 0, 0, 0],
         scales: { x: { time: false }, y: { auto: true } },
         axes: [
-          { stroke: "#666688", grid: { stroke: "#1A1A2E" }, label: "Frequency", values: freqAxisValues },
-          { stroke: "#666688", grid: { stroke: "#1A1A2E" }, label: "Magnitude" },
+          { stroke: "#666688", grid: { stroke: grid.dim }, label: "Frequency", values: freqAxisValues },
+          { stroke: "#666688", grid: { stroke: grid.dim }, label: "Magnitude" },
         ],
         series: [
           {},
@@ -435,8 +449,8 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
         padding: [0, 0, 0, 0],
         scales: { x: { auto: true, time: false }, y: { auto: true } },
         axes: [
-          { stroke: "#666688", grid: { stroke: "#1A1A2E" }, label: vpp < 2 ? "mV" : "V", values: voltAxisValues },
-          { stroke: "#666688", grid: { stroke: "#1A1A2E" }, label: vpp < 2 ? "mV" : "V", values: voltAxisValues },
+          { stroke: "#666688", grid: { stroke: grid.dim }, label: vpp < 2 ? "mV" : "V", values: voltAxisValues },
+          { stroke: "#666688", grid: { stroke: grid.dim }, label: vpp < 2 ? "mV" : "V", values: voltAxisValues },
         ],
         series: [
           {},
@@ -453,8 +467,8 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
         padding: [0, 0, 0, 0],
         scales: { x: { time: false } },
         axes: [
-          { stroke: "#666688", grid: { stroke: "#3A3A52" }, ticks: { stroke: "#3A3A52" }, splits: divisionSplits, values: timeAxisValues },
-          { stroke: "#666688", grid: { stroke: "#3A3A52" }, ticks: { stroke: "#3A3A52" }, splits: divisionSplits, label: vpp < 2 ? "mV" : "V", values: voltAxisValues },
+          { stroke: "#666688", grid: { stroke: grid.major }, ticks: { stroke: grid.major }, splits: divisionSplits, values: timeAxisValues },
+          { stroke: "#666688", grid: { stroke: grid.major }, ticks: { stroke: grid.major }, splits: divisionSplits, label: vpp < 2 ? "mV" : "V", values: voltAxisValues },
         ],
         series: [
           {},
@@ -489,8 +503,8 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
           padding: [0, 0, 0, 0],
           scales: { x: { time: false }, y: { auto: true } },
           axes: [
-            { stroke: "#666688", grid: { stroke: "#1A1A2E" }, values: timeAxisValues, size: 18 },
-            { stroke: "#666688", grid: { stroke: "#1A1A2E" }, size: 18 },
+            { stroke: "#666688", grid: { stroke: grid.dim }, values: timeAxisValues, size: 18 },
+            { stroke: "#666688", grid: { stroke: grid.dim }, size: 18 },
           ],
           series: [
             {},
@@ -504,7 +518,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
         overviewPlotRef.current = new uPlot(oOpts, [[], [], [], []], overviewContainer);
       }
     }
-  }, [vpp, ch1Vertical.vDiv, ch2Vertical.vDiv, ch1Vertical.enabled, ch2Vertical.enabled, math.enabled, ch1Vertical.position, ch2Vertical.position, horizontal.position, horizontal.sDiv, viewMode]);
+  }, [vpp, ch1Vertical.vDiv, ch2Vertical.vDiv, ch1Vertical.enabled, ch2Vertical.enabled, math.enabled, ch1Vertical.position, ch2Vertical.position, horizontal.position, horizontal.sDiv, viewMode, skin]);
 
   useEffect(() => {
     const div = plotDivRef.current;
