@@ -1,3 +1,4 @@
+#Requires -Version 7
 param(
     [ValidateSet('start', 'stop', 'status')][string]$Action = 'start',
     [string]$NodePath = ''
@@ -51,9 +52,9 @@ asyncio.run(stop())
 if (!(Test-Path -LiteralPath $forgePython)) { throw 'Install project .venv dependencies first.' }
 if (!$NodePath) {
     $nodeCommand = Get-Command node -ErrorAction SilentlyContinue
-    $NodePath = if ($nodeCommand) {$nodeCommand.Source} else {Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe'}
+    if ($nodeCommand) { $NodePath = $nodeCommand.Source }
 }
-if (!(Test-Path -LiteralPath $NodePath)) { throw 'Specify -NodePath with an installed Node.js executable.' }
+if (!$NodePath -or !(Test-Path -LiteralPath $NodePath)) { throw 'Specify -NodePath with an installed Node.js executable.' }
 $forgePlans = @(
     @{name='usb'; port=8766; exe=$forgePython; args=@((Join-Path $forgeRoot 'server\usb-bridge\usb_server.py')); cwd=$forgeRoot},
     @{name='backend'; port=8000; exe=$forgePython; args=@('-m','uvicorn','backend.app:app','--app-dir',$forgeRoot,'--host','127.0.0.1','--port','8000'); cwd=$forgeRoot},

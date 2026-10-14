@@ -9,6 +9,7 @@ its POSIX terminal remains unavailable.
 
 Use the existing project `.venv`, frontend dependencies, and built `frontend/dist`.
 The launcher does not install dependencies or modify system settings.
+It requires PowerShell 7 (`pwsh`).
 
 ```powershell
 ./scripts/windows-services.ps1 start
@@ -18,8 +19,8 @@ The launcher does not install dependencies or modify system settings.
 
 Open http://127.0.0.1:5173/ and select WaveForge → Scope. The launcher binds
 all services to loopback, records process ownership in ignored `logs/`, and
-refuses to take over occupied ports. Pass `-NodePath` if Node is not on PATH or
-in the local Codex runtime. Stop sends the hardware stop command before exiting.
+refuses to take over occupied ports. Pass `-NodePath` if Node is not on PATH.
+Stop sends the hardware stop command before exiting.
 
 Install USB bridge requirements in the project venv when preparing a new machine:
 `python -m pip install -r server/usb-bridge/requirements.txt`.
@@ -150,7 +151,7 @@ never overwrite files. No sigrok process or additional USB owner is used to save
 Read an existing file without releasing USB:
 
 ```powershell
-& D:/Hantek/sigrok/sigrok-cli.exe -i new-trace.sr --show
+sigrok-cli -i new-trace.sr --show
 ```
 
 Direct hardware capture with sigrok remains a separate operation requiring the
