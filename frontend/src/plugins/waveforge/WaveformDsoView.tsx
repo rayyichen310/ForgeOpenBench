@@ -9,6 +9,7 @@ import { HorizontalPanel } from "./HorizontalPanel";
 import { TriggerPanel } from "./TriggerPanel";
 import { MathPanel } from "./MathPanel";
 import { MeasurementBar } from "./MeasurementBar";
+import { ScopeStatusBar } from "./ScopeStatusBar";
 import { MeasurementsPanel } from "./MeasurementsPanel";
 import { CursorsPanel } from "./CursorsPanel";
 import type { Measurements, VerticalState, HorizontalState, TriggerState, MathState, MeasurementKey, TraceSnapshot, ScopePreset, Cursor } from "./scopeTypes";
@@ -1479,6 +1480,9 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
           {viewMode === "time" && (
             <div ref={overviewDivRef} className="h-20 rounded border border-fob-border overflow-hidden bg-fob-surface shrink-0 min-w-0" />
           )}
+          <ScopeStatusBar ch1={ch1Vertical} ch2={ch2Vertical} zeroActive={zeroActive}
+            sDiv={horizontal.sDiv} delayS={horizontal.position / 100 * horizontal.sDiv * 10}
+            sampleRateLabel={rateLabel} trigger={trigger} running={acquireMode !== "stopped" && acquireMode !== "single-held"} />
         </div>
 
         {/* Right Control Panel */}
