@@ -1,5 +1,62 @@
 # Changelog
 
+## [0.9.1-rc28+windows] — 2026-10-14
+
+Fork changes on top of rc28 (branch `windows-hantek`). Scope (DSO) mode only; setup and CLI usage are in [WINDOWS_SCOPE.md](WINDOWS_SCOPE.md).
+
+### Added
+- **WaveForge Scope — native Windows capture for the Hantek 6022BL**
+  - USB bridge finds the device through PyUSB with the project-local `libusb-package` DLL (WinUSB driver required) and reads DSO samples in `_capture_loop_windows`; the Linux Rust capture path is unchanged.
+  - Frames carry a sequence number and the bridge sends the next one only after the view acknowledges the previous (`usb_frame_ack`); a sequence gap marks the chunk discontinuous and resets the sample buffer.
+  - DSO sample rate and per-channel input range are validated before configuration; CH2 range is set independently of CH1.
+  - `scripts/windows-services.ps1 start|status|stop` launches backend, bridge and frontend on loopback, refuses occupied ports, and sends the hardware stop command on exit. Requires PowerShell 7 and Node on PATH (or `-NodePath`).
+  - `backend/app.py` starts on Windows; the terminal WebSocket closes with "Windows terminal support is not installed".
+- **WaveForge Scope — CLI control of the open Scope view** (`server/usb-bridge/scope_cli.py`)
+  - The view registers with the bridge (`scope_register`); CLI commands are relayed as `scope_control` and answered with `scope_result`, so the CLI never opens USB itself.
+  - Actions: `status`, `run`, `single`, `stop`, `autoset`, `force`, `clear`, `reference`, `set` (validated settings patch), `csv`, `png`, `sr`, `load-sr`, `view`, `measurements`, `zero`, `zero-reset`. Output files are created exclusively and never overwritten.
+  - `scopeSettings.validateScopePatch` rejects unknown keys and unsupported values instead of applying them.
+- **WaveForge Scope — per-channel GND zero calibration**
+  - **Zero calibration** panel and `zero` / `zero-reset` actions subtract the mean of a stopped DC GND capture per channel. Requires ground confirmation and is applied only while probe, hardware range and sample rate match.
+  - Profiles are saved by the bridge to `../calibration/zero-profiles.json` (outside the repo), keyed by device model, channel, range, probe and rate, and reloaded on every connect. Reset deletes only the current condition; a corrupt file is reported, not overwritten.
+  - Panel shows each offset's origin (`session` / `stored` / `replay`) and date, and asks for a new GND measurement when a stored profile is older than 30 days.
+- **WaveForge Scope — single-segment SR export**
+  - Toolbar **SR** button and `sr` action save the latest contiguous CH1/CH2 segment as a sigrok v2 session with float32, uncorrected samples, plus `scope-settings.json` provenance (rates, probes, ranges, display settings, zero profiles, `capturedAt`).
+  - Toolbar saves go to a unique file under `../captures/` and show the path; no browser download permission needed.
+- **WaveForge Scope — SR replay**
+  - **Open SR** and `load-sr` show a Scope-written SR as a held capture with its stored settings, without using USB. The CLI can add a sample window with time origin, per-file zero offsets, and a display patch.
+  - `view` sets the plot range like wheel zoom/pan; `png` accepts the same range plus `width`/`height` and returns the plot bbox and scales.
+- **WaveForge Scope — display**
+  - Time-mode grid draws ten fixed divisions per axis, so V/div and s/div read directly off the screen.
+  - Status strip under the trace shows channel scale, timebase, delay and trigger settings, so screenshots carry their capture conditions.
+  - `measurements` action selects readout keys per channel.
+- Software trigger coupling: AC, HF/LF reject (50 kHz) and noise reject now filter the trigger source; the 20 MHz bandwidth limit, AC coupling and invert are applied per channel (`scopeProcessing.ts`).
+- Preset name field in the toolbar, and a JSON dialog for preset export and paste-import, for embedded browsers without `prompt()` or file downloads. Imported presets must be complete and valid.
+- README fork notice.
+
+### Changed
+- Trigger mode labels: `smart` shows as **Smart** and `auto` as **Auto** (previously "Auto" and "Free"). Ext and AC Line sources are disabled as unavailable on the 6022BL; filter couplings are labelled as software.
+- Channel **BW20** checkbox renamed **LPF20MHz**.
+- Zero calibration panel moved below Trigger; its storage note moved to a tooltip.
+- Plot grid colours come from `--fob-plot-grid` variables; the Forge Light skin uses a light grid and overview strip.
+
+### Fixed
+- **WaveForge Scope — trigger and acquisition**
+  - Trigger search keeps 25% pre- and 75% post-trigger samples, and the trigger time is interpolated between samples.
+  - Averaging accumulates trigger-aligned windows instead of raw buffers, and resets when the window length changes.
+  - Single capture enters single-held only after the stop RPC completes.
+  - Holdoff is honoured in non-Auto modes; Normal mode no longer moves the trigger level by itself.
+  - AutoSet selects Auto trigger and resumes acquisition when stopped or single-held.
+- **WaveForge Scope — rendering**
+  - Peak-detect bins keep their actual time bounds after triggering.
+  - XY mode draws samples in acquisition order with its own path builder (uPlot assumed ascending X) and scales to the data.
+  - CH1 checkbox hides its trace like CH2.
+  - Trigger line follows the plot's y scale, so it stays on its level after pan or zoom.
+- `vDivToVpp` picks the smallest hardware range that covers 10 divisions (searched from the largest before).
+- FFT cursors read in Hz and drop the 1/ΔT readout.
+- Time axis shows fractional milliseconds below 10 ms.
+- CSV export returns an error when there is no trace instead of doing nothing (CLI path).
+- Windows launcher and docs no longer reference machine-specific Node or sigrok-cli paths.
+
 ## [0.9.1-rc28] — 2026-07-08
 
 ### Added
