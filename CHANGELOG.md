@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- Disabled Ext and AC Line trigger sources read "(not supported)" instead of naming the 6022BL; no supported scope (6022BL or 6022BE) has these inputs.
+
 ## [0.9.1-rc28-win.1] — 2026-10-14
 
 Fork changes on top of rc28 (branch `windows-hantek`); later fork versions continue as `-win.N`. Scope (DSO) mode only; setup and CLI usage are in [WINDOWS_SCOPE.md](WINDOWS_SCOPE.md).

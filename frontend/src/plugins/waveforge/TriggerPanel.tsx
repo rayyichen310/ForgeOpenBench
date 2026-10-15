@@ -22,8 +22,8 @@ export function TriggerPanel({ state, onChange, disabled, onSet50Percent }: Prop
         >
           <option value="ch1">CH1</option>
           <option value="ch2">CH2</option>
-          <option value="ext" disabled>Ext (not available on 6022BL)</option>
-          <option value="acline" disabled>AC Line (not available on 6022BL)</option>
+          <option value="ext" disabled>Ext (not supported)</option>
+          <option value="acline" disabled>AC Line (not supported)</option>
         </select>
       </div>
 
