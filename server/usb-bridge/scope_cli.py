@@ -32,6 +32,11 @@ async def request(ws, action, value=None):
         return message['result']
 
 
+# Every retained segment losing data for this many status polls (~2 s) means the rate is past
+# what USB delivers, so waiting out --timeout cannot help.
+LOSSY_POLLS = 10
+
+
 def segment_ready(segment, rate, min_samples, allow_loss):
     return (segment is not None and segment['sampleRate'] == rate and segment['samples'] >= min_samples
             and (allow_loss or segment['usbDataLoss'] is False))
@@ -47,12 +52,17 @@ async def capture(ws, args):
         await request(ws, 'set', patch)
     rate = (await request(ws, 'status'))['sampleRate']
     segment = None
-    while loop.time() < deadline:
+    lossy_polls = 0
+    while loop.time() < deadline and lossy_polls < LOSSY_POLLS:
         # Run from Stop reconfigures the hardware and discards the previous segment.
         await request(ws, 'run')
         while loop.time() < deadline:
             await asyncio.sleep(0.2)
-            if segment_ready((await request(ws, 'status'))['capture'], rate, args.min_samples, args.allow_loss):
+            segment = (await request(ws, 'status'))['capture']
+            if segment_ready(segment, rate, args.min_samples, args.allow_loss):
+                break
+            lossy_polls = lossy_polls + 1 if segment is not None and segment['usbDataLoss'] else 0
+            if lossy_polls >= LOSSY_POLLS and not args.allow_loss:
                 break
         await request(ws, 'stop')
         # Chunks that arrived before Stop may have restarted the segment, so check what is retained.
@@ -62,7 +72,8 @@ async def capture(ws, args):
     wanted = f'{args.min_samples} contiguous samples at {rate} Sa/s'
     if not args.allow_loss:
         wanted += ' without USB data loss'
-    raise RuntimeError(f'No segment with {wanted} within {args.timeout} s; last retained segment: {segment}. '
+    waited = f'after {LOSSY_POLLS} lossy status polls' if lossy_polls >= LOSSY_POLLS else f'within {args.timeout} s'
+    raise RuntimeError(f'No segment with {wanted} {waited}; last retained segment: {segment}. '
                        'Two channels at 24 MSa/s or more reach the USB 2.0 bandwidth limit; lower the rate or pass --allow-loss.')
 
 

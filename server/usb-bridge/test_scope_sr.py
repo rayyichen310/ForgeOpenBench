@@ -129,6 +129,23 @@ class ScopeSrTests(unittest.TestCase):
                 self.assertEqual(path.read_bytes(), payload)
         asyncio.run(check())
 
+    def test_cli_capture_fails_fast_when_every_segment_loses_data(self):
+        lossy = {'sampleRate': 24_000_000, 'samples': 131_072, 'usbDataLoss': True}
+        actions = []
+        async def fake_request(ws, action, value=None):
+            actions.append(action)
+            if action == 'status':
+                return {'sampleRate': 24_000_000, 'capture': lossy}
+            return {'saved': action}
+        args = Namespace(action='capture', params='{}', min_samples=10_000, allow_loss=False, timeout=30)
+        with patch.object(scope_cli, 'request', fake_request), patch.object(scope_cli.asyncio, 'sleep', AsyncMock()):
+            with self.assertRaisesRegex(RuntimeError, 'after 10 lossy status polls'):
+                asyncio.run(scope_cli.capture(None, args))
+            self.assertEqual(actions.count('run'), 1)
+            self.assertEqual(actions[-2:], ['stop', 'status'])
+            args.allow_loss = True
+            self.assertEqual(asyncio.run(scope_cli.capture(None, args)), {'saved': 'sr'})
+
 
 if __name__ == '__main__':
     unittest.main()

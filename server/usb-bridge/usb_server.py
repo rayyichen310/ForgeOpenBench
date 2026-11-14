@@ -104,7 +104,7 @@ PID_SCOPE              = 0x602A
 # Hantek 6022 scope protocol constants (Ho-Ro / rpcope1 reverse engineering)
 HANTEK_SET_CH0_RANGE   = 0xE0   # value: 1=5V, 2=2.5V, 5=1V, 10=500mV
 HANTEK_SET_CH1_RANGE   = 0xE1
-HANTEK_SET_SAMPLERATE  = 0xE2   # value: 48,30,24,16,8,4,1 (MHz); 50,20,10 (*10kHz)
+HANTEK_SET_SAMPLERATE  = 0xE2   # value: see HANTEK_SAMPLERATE_MAP / HANTEK_STOCK_SAMPLERATE_MAP
 HANTEK_START           = 0xE3   # value: 1=start, 0=stop
 HANTEK_SET_TEST_SIG    = 0xE6   # Calibration pulse frequency (NOT 0xE4!)
 # Ho-Ro firmware frequency byte encoding (LibUsbScope.py):
@@ -117,15 +117,34 @@ HANTEK_SET_TEST_SIG    = 0xE6   # Calibration pulse frequency (NOT 0xE4!)
 #           elif freq < 5600: byte = (freq+50)//100 + 200
 #           else: byte = (freq+500)//1000
 HANTEK_VOLT_RANGE = {10.0: 1, 5.0: 2, 2.0: 5, 1.0: 10}
-HANTEK_SAMPLERATE_MAP = {  # hz -> device code (matches Ho-Ro LibUsbScope.py)
+# hz -> E2 code. Ho-Ro firmware (bcdDevice 0x0210, from scope6022.inc samplerates[]):
+HANTEK_SAMPLERATE_MAP = {
     48_000_000: 48, 30_000_000: 30, 24_000_000: 24, 16_000_000: 16,
     15_000_000: 15, 12_000_000: 12, 10_000_000: 10,  8_000_000:  8,
      6_000_000:  6,  5_000_000:  5,  4_000_000:  4,  3_000_000:  3,
      2_000_000:  2,  1_000_000:  1,
-       500_000: 50,   400_000: 40,   200_000: 20,   128_000: 113,
-       100_000: 10,    64_000: 106,   50_000: 105,    40_000: 104,
+       500_000: 150,  400_000: 140,  200_000: 120,  128_000: 113,
+       100_000: 110,   64_000: 106,   50_000: 105,   40_000: 104,
         32_000: 103,   20_000: 102,
 }
+# Hantek's own Windows driver loads the stock firmware (bcdDevice 0x0000, "ODM"/"Hantek6022BL")
+# before Forge sees the scope. It knows only these codes and ignores others, sampling on at the
+# previous rate (CAL square wave, 2026-11-15); sub-MHz codes count in 10 kSa/s.
+HANTEK_STOCK_SAMPLERATE_MAP = {
+    48_000_000: 48, 30_000_000: 30, 24_000_000: 24, 16_000_000: 16,
+     8_000_000:  8,  4_000_000:  4,  1_000_000:  1,
+       500_000: 50,   200_000: 20,   100_000: 10,
+}
+
+
+def _dso_samplerate_map(dev=None) -> dict:
+    """E2 codes of the firmware running on `dev` (or the connected device)."""
+    dev = dev if dev is not None else state.device
+    bcd = getattr(dev, "bcdDevice", None)
+    if isinstance(bcd, int) and bcd < 0x0200:
+        return HANTEK_STOCK_SAMPLERATE_MAP
+    return HANTEK_SAMPLERATE_MAP
+
 
 CMD_START_FLAGS_SAMPLE_8BIT  = 0 << 5
 CMD_START_FLAGS_SAMPLE_16BIT = 1 << 5
@@ -306,7 +325,7 @@ class ServerState:
     rust_proc: Optional[subprocess.Popen] = None
     frame_ack: threading.Event = field(default_factory=threading.Event)
     scope_owner: object = None
-    dso_loss: Optional[dict] = None  # Windows DSO read accounting since the last start
+    dso_loss: Optional[dict] = None  # Windows DSO transfer and loss counts since the last start
 
 state = ServerState()
 _state_lock = asyncio.Lock()
@@ -448,8 +467,9 @@ def _hantek_setup(dev: usb.core.Device, cfg) -> bool:
     Protocol: wValue=0, wIndex=0, data=bytes([param]) — firmware reads EP0BUF[0].
     Matches Ho-Ro/LibUsbScope.py controlWrite(0x40, request, 0, 0, bytes([param])).
     """
-    best_hz = min(HANTEK_SAMPLERATE_MAP.keys(), key=lambda k: abs(k - cfg.sample_rate_hz))
-    rate_code = HANTEK_SAMPLERATE_MAP[best_hz]
+    rates = _dso_samplerate_map(dev)
+    best_hz = min(rates, key=lambda k: abs(k - cfg.sample_rate_hz))
+    rate_code = rates[best_hz]
 
     # Map frontend vpp to Hantek code: code 1=±5V(10Vpp), 2=±2.5V(5Vpp), 5=±1V(2Vpp), 10=±500mV(1Vpp)
     voltage_range = getattr(cfg, 'voltage_range', 2.0)
@@ -698,79 +718,227 @@ def _capture_loop_rust() -> None:
     log.info("Rust capture loop exited")
 
 
-# The 6022BL has no sample memory: the ADC streams through the FX2 endpoint FIFO, and
-# samples are dropped on the device whenever USB does not drain it in time (two channels
-# above ~24 MSa/s exceed USB 2.0 bulk bandwidth). Nothing in the data marks the drop, so
-# loss is inferred from timing: bytes received must keep up with rate * 2 bytes/s.
-DSO_FIFO_BYTES = 2048        # smallest plausible EP6 buffering; a longer read gap overflows it
-DSO_READ_SLACK_S = 0.0005    # host wake-up latency tolerated before a read counts as lossy
+# The 6022BL has no sample memory: the ADC streams through a few KB of FX2 endpoint FIFO,
+# and the device drops samples whenever USB does not drain it in time. Nothing in the data
+# marks the drop. Two remedies, both measured on the CAL square wave (2026-11-15):
+# - keep several bulk transfers queued with WinUSB RAW_IO, so the host controller never
+#   idles between transfers (sync reads lost samples at every read boundary from 4 MSa/s;
+#   queued reads without RAW_IO still lost ~1 KB per transfer at 16 MSa/s);
+# - infer loss by conservation: elapsed time * rate * 2 bytes against bytes received.
+# Two channels at 24 MSa/s or more exceed what USB 2.0 delivers (~45 MB/s) and stay lossy.
+DSO_FIFO_BYTES = 2048        # endpoint buffering allowed for before a deficit counts as loss
+DSO_LATENCY_SLACK_S = 0.0002 # callback-latency spread between the least-delayed completions
+DSO_WINDOW_S = 0.03          # completions compared before and after each transfer
 DSO_FLAG_LOSS = 0x80         # reserved low byte: samples are missing inside this frame
+DSO_QUEUE = 8                # transfers kept queued
+DSO_BACKLOG_BYTES = 524_288  # bytes held while the page is busy: two full transfers fill its 200k samples
 
 
-def _dso_read_loss(rate_hz: int, received: int, read_s: float, gap_s: Optional[float]) -> tuple[bool, bool, int]:
-    """Classify one bulk read as (gap_lost, read_lost, estimated_lost_bytes).
+class DsoLossTracker:
+    """Decide which transfers of one stream lost samples on the device.
 
-    gap_lost: the host left no transfer pending for longer than the FIFO lasts, so the
-    samples between the previous read and this one are not contiguous.
-    read_lost: the read took longer than delivering `received` bytes at the sample
-    rate allows, so the device dropped samples while it was in progress.
+    deficit = elapsed * rate * 2 - bytes received. Device loss raises it for good; late
+    callbacks raise single readings only, never lower them. So a transfer is lossy when the
+    lowest deficit over it and the next DSO_WINDOW_S exceeds the lowest over the preceding
+    DSO_WINDOW_S by more than the FIFO plus latency slack. Transfers are released once that
+    window has passed. The first transfer is the time origin and is dropped: it holds stale
+    FIFO data and whatever overflowed between the start command and the first transfer.
     """
-    bytes_per_s = rate_hz * 2
-    gap_lost = gap_s is not None and gap_s * bytes_per_s > DSO_FIFO_BYTES
-    deficit = bytes_per_s * read_s - received
-    read_lost = deficit > bytes_per_s * DSO_READ_SLACK_S
-    lost = max(0, round(deficit)) + (max(0, round(gap_s * bytes_per_s) - DSO_FIFO_BYTES) if gap_lost else 0)
-    return gap_lost, read_lost, lost
+
+    def __init__(self, rate_hz: int):
+        self.bps = rate_hz * 2
+        self.threshold = DSO_FIFO_BYTES + self.bps * DSO_LATENCY_SLACK_S
+        self.t0: Optional[float] = None
+        self.received = 0
+        self.pending: collections.deque = collections.deque()  # (t, deficit, data)
+        self.history: collections.deque = collections.deque()  # (t, deficit) of released transfers
+        self.stats = {"transfers": 0, "lossy": 0, "received_bytes": 0, "deficit_bytes": 0}
+
+    def add(self, t: float, data: bytes) -> list:
+        """Record a completed transfer; return [(data, lossy)] for transfers now decided."""
+        if self.t0 is None:
+            self.t0 = t
+            self.history.append((t, 0.0))
+            return []
+        self.received += len(data)
+        deficit = (t - self.t0) * self.bps - self.received
+        self.pending.append((t, deficit, data))
+        self.stats["received_bytes"] = self.received
+        self.stats["deficit_bytes"] = round(deficit)
+        out = []
+        while len(self.pending) > 1 and self.pending[-1][0] - self.pending[0][0] >= DSO_WINDOW_S:
+            t_i, d_i, data_i = self.pending.popleft()
+            ahead = min(d_i, min(d for _, d, _ in self.pending))
+            while len(self.history) > 1 and self.history[1][0] <= t_i - DSO_WINDOW_S:
+                self.history.popleft()
+            behind = min(d for _, d in self.history)
+            lossy = ahead - behind > self.threshold
+            self.history.append((t_i, d_i))
+            self.stats["transfers"] += 1
+            self.stats["lossy"] += lossy
+            out.append((data_i, lossy))
+        return out
+
+
+class _BulkInQueue:
+    """Keep `count` libusb bulk IN transfers queued on one endpoint (pyusb has no async API)."""
+
+    def __init__(self, dev: usb.core.Device, ep: int, size: int, count: int = DSO_QUEUE):
+        import ctypes
+        import usb.backend.libusb1 as libusb1
+        self._ct = ctypes
+        self.lib = libusb1._lib
+        self.handle = dev._ctx.handle.handle
+        self.ctx = dev._ctx.backend.ctx
+        self.ep = ep
+        self.done: collections.deque = collections.deque()
+        self.in_flight = 0
+        self.bufs = [(ctypes.c_ubyte * size)() for _ in range(count)]
+        self.index = {}
+        self.transfers = []
+        self.raw_io = self._set_raw_io(True)
+
+        @libusb1._libusb_transfer_cb_fn_p
+        def _done(tp):
+            self.in_flight -= 1
+            self.done.append(self.index[ctypes.addressof(tp.contents)])
+        self._cb = _done
+        self.lib.libusb_handle_events_timeout.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        for i, buf in enumerate(self.bufs):
+            tp = self.lib.libusb_alloc_transfer(0)
+            t = tp.contents
+            t.dev_handle = self.handle
+            t.flags = 0
+            t.endpoint = ep
+            t.type = 2  # LIBUSB_TRANSFER_TYPE_BULK
+            t.timeout = 0
+            t.length = size
+            t.callback = self._cb
+            t.buffer = ctypes.addressof(buf)
+            t.num_iso_packets = 0
+            self.index[ctypes.addressof(t)] = i
+            self.transfers.append(tp)
+        try:
+            for i in range(count):
+                self._submit(i)
+        except usb.core.USBError:
+            self.close()
+            raise
+
+    def _set_raw_io(self, enable: bool) -> bool:
+        ct = self._ct
+        try:
+            fn = self.lib.libusb_endpoint_set_raw_io
+        except AttributeError:
+            log.warning("libusb has no RAW_IO support; queued reads may leave gaps")
+            return False
+        fn.argtypes = [ct.c_void_p, ct.c_ubyte, ct.c_int]
+        fn.restype = ct.c_int
+        rc = fn(self.handle, self.ep, int(enable))
+        if rc != 0:
+            log.warning("WinUSB RAW_IO %s failed (libusb error %d)", "enable" if enable else "disable", rc)
+        return rc == 0
+
+    def _submit(self, i: int) -> None:
+        rc = self.lib.libusb_submit_transfer(self.transfers[i])
+        if rc != 0:
+            raise usb.core.USBError(f"libusb_submit_transfer failed ({rc})", rc)
+        self.in_flight += 1
+
+    def _wait(self, timeout_s: float) -> None:
+        tv = (self._ct.c_long * 2)(0, int(timeout_s * 1_000_000))
+        self.lib.libusb_handle_events_timeout(self.ctx, self._ct.byref(tv))
+
+    def next(self, timeout_s: float = 0.1) -> Optional[bytes]:
+        """Wait for the oldest transfer; return its data and requeue it, or None on timeout."""
+        if not self.done:
+            self._wait(timeout_s)
+            if not self.done:
+                return None
+        i = self.done.popleft()
+        t = self.transfers[i].contents
+        if t.status != 0:
+            raise usb.core.USBError(f"bulk transfer failed (libusb status {t.status})", t.status)
+        data = self._ct.string_at(self.bufs[i], t.actual_length)
+        self._submit(i)
+        return data
+
+    def close(self) -> None:
+        for tp in self.transfers:
+            self.lib.libusb_cancel_transfer(tp)
+        deadline = time.perf_counter() + 1.0
+        while self.in_flight > 0 and time.perf_counter() < deadline:
+            self._wait(0.05)
+        if self.in_flight > 0:
+            log.warning("%d bulk transfers did not cancel; leaking them", self.in_flight)
+            return
+        for tp in self.transfers:
+            self.lib.libusb_free_transfer(tp)
+        self.transfers = []
+        if self.raw_io:
+            self._set_raw_io(False)
+
+
+def _dso_transfer_size(rate_hz: int) -> int:
+    """About 20 ms of data per transfer, a multiple of 512 as RAW_IO requires."""
+    return max(4096, min(262_144, ((rate_hz * 2 // 50 + 511) // 512) * 512))
 
 
 def _capture_loop_windows() -> None:
-    """Read interleaved DSO samples with WinUSB using the existing binary protocol."""
+    """Stream interleaved DSO samples over queued WinUSB transfers using the binary protocol."""
     dev = state.device
     rate = state.config.sample_rate_hz
-    read_size = max(16_384, min(262_144, ((rate * 2 // 30 + 511) // 512) * 512))
-    remainder = b""
+    tracker = DsoLossTracker(rate)
+    tracker.stats["dropped_for_page"] = 0
+    state.dso_loss = tracker.stats
     sequence = 0
-    last_end: Optional[float] = None
-    loss = state.dso_loss = {"reads": 0, "gap_lost": 0, "read_lost": 0,
-                             "received_bytes": 0, "estimated_lost_bytes": 0, "max_read_excess_s": 0.0}
+    backlog = bytearray()   # contiguous samples the page has not acknowledged room for yet
+    backlog_lossy = False
+    broken = False          # samples were dropped since the last frame sent
+
+    def send() -> None:
+        nonlocal sequence, broken
+        state.frame_ack.clear()
+        # A skipped sequence number tells the page to start a new segment.
+        sequence = (sequence + (2 if broken else 1) - 1) % 0xFFFFFF + 1
+        frame = bytearray(_build_la_binary_frame(rate, 8, bytes(backlog)))
+        frame[20:24] = ((sequence << 8) | 8 | (DSO_FLAG_LOSS if backlog_lossy else 0)).to_bytes(4, 'little')
+        broadcast_binary_sync(bytes(frame))
+        backlog.clear()
+        broken = False
+
+    queue = None
     log_t0 = time.perf_counter()
     try:
+        queue = _BulkInQueue(dev, BULK_IN_EP_DSO, _dso_transfer_size(rate))
+        tracker.stats["raw_io"] = queue.raw_io
         while not state.stop_event.is_set():
-            t0 = time.perf_counter()
-            try:
-                data = dev.read(BULK_IN_EP_DSO, read_size, timeout=500)
-            except usb.core.USBTimeoutError:
-                last_end = None
+            data = queue.next()
+            if data is None:
                 continue
-            t1 = time.perf_counter()
-            gap_lost, read_lost, lost = _dso_read_loss(
-                rate, len(data), t1 - t0, None if last_end is None else t0 - last_end)
-            last_end = t1
-            loss["reads"] += 1
-            loss["gap_lost"] += gap_lost
-            loss["read_lost"] += read_lost
-            loss["received_bytes"] += len(data)
-            loss["estimated_lost_bytes"] += lost
-            loss["max_read_excess_s"] = max(loss["max_read_excess_s"], t1 - t0 - len(data) / (rate * 2))
-            if gap_lost:
-                remainder = b""         # never pair a byte across missing samples
-                sequence = sequence % 0xFFFFFF + 1  # skipped number: the frontend starts a new segment
-            raw = remainder + bytes(data)
-            count = len(raw) - len(raw) % 2
-            remainder = raw[count:]
-            sequence = sequence % 0xFFFFFF + 1
-            if count and (not state.clients or state.frame_ack.is_set()):
-                state.frame_ack.clear()
-                frame = bytearray(_build_la_binary_frame(rate, 8, raw[:count]))
-                frame[20:24] = ((sequence << 8) | 8 | (DSO_FLAG_LOSS if read_lost else 0)).to_bytes(4, 'little')
-                broadcast_binary_sync(bytes(frame))
-            if t1 - log_t0 >= 5:
-                log_t0 = t1
-                log.info("DSO %d Sa/s: %s", rate, loss)
+            now = time.perf_counter()
+            for chunk, lossy in tracker.add(now, data):
+                chunk = chunk[:len(chunk) & ~1]  # whole CH1/CH2 pairs; transfers are 512-byte multiples
+                if backlog and (lossy or backlog_lossy or len(backlog) + len(chunk) > DSO_BACKLOG_BYTES):
+                    if not state.clients or state.frame_ack.is_set():
+                        send()
+                    else:
+                        backlog.clear()
+                        broken = True
+                        tracker.stats["dropped_for_page"] += 1
+                backlog += chunk
+                backlog_lossy = lossy
+            if backlog and (not state.clients or state.frame_ack.is_set()):
+                send()
+            if now - log_t0 >= 5:
+                log_t0 = now
+                log.info("DSO %d Sa/s: %s", rate, tracker.stats)
     except usb.core.USBError as exc:
         log.exception("Windows DSO capture failed")
         broadcast_sync({"type": "usb_error", "message": str(exc)})
     finally:
+        if queue is not None:
+            queue.close()
         try:
             dev.ctrl_transfer(0x40, HANTEK_START, 0, 0, b"\x00", USB_TIMEOUT)
         except usb.core.USBError as exc:
@@ -1189,7 +1357,13 @@ async def handle_usb_disconnect(_ws: WebSocketServerProtocol, _req: dict) -> dic
 async def handle_usb_configure(_ws: WebSocketServerProtocol, req: dict) -> dict:
     mode = req.get("mode", state.config.mode)
     if mode == "dso":
-        if req.get("sample_rate_hz", state.config.sample_rate_hz) not in HANTEK_SAMPLERATE_MAP:
+        rate = req.get("sample_rate_hz", state.config.sample_rate_hz)
+        rates = _dso_samplerate_map()
+        if rate not in rates:
+            if rate in HANTEK_SAMPLERATE_MAP:
+                supported = ", ".join(f"{hz:,}" for hz in sorted(rates, reverse=True))
+                return {"type": "usb_error", "message":
+                        f"The scope runs Hantek's stock firmware, which has no {rate:,} Sa/s; use {supported} Sa/s"}
             return {"type": "usb_error", "message": "Unsupported DSO sample rate"}
         for key in ("voltage_range", "voltage_range_ch2"):
             if req.get(key, getattr(state.config, key)) not in HANTEK_VOLT_RANGE:

@@ -152,6 +152,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
   // Compatibility shims — old boolean refs mapped to new acquireMode
   // TODO: migrate all references to acquireModeRef directly
   const runningRef = useRef(false);
+  const startErrorRef = useRef<string | null>(null); // why the last start failed, for scope_control run
   const pausedRef = useRef(false);
   const singleArmedRef = useRef(false);
   const singleJustTriggeredRef = useRef(false);
@@ -951,6 +952,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
   // Start / stop
   const start = useCallback(async () => {
     if (!connected || runningRef.current) return;
+    startErrorRef.current = null;
     // Guard against Strict Mode double-mount and parent reset races
     if (!transport.deviceInfo) {
       console.warn("[DSO] start skipped: no device connected");
@@ -998,6 +1000,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
         intentionalStopRef.current = true;
       }
       const msg = e instanceof Error ? e.message : String(e);
+      startErrorRef.current = msg;
       notifyError(`Start failed: ${msg}`);
       console.warn("[DSO] start error", e);
     }
@@ -1430,7 +1433,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
       return {accepted: true};
     }
     if (!connected) throw new Error('Scope is not connected');
-    if (action === 'run') { await startRef.current(); if (!runningRef.current) throw new Error('Capture start failed'); }
+    if (action === 'run') { await startRef.current(); if (!runningRef.current) throw new Error(startErrorRef.current ?? 'Capture start failed'); }
     else if (action === 'stop') { await stop(true); setAcquireMode('stopped'); }
     else if (action === 'single') await handleSingle();
     else if (action === 'autoset') await handleAutoSet();

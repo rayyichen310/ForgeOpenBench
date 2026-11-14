@@ -59,7 +59,8 @@ It stops, applies the patch, runs (Run from Stop reconfigures the hardware and d
 segment), waits for a retained segment at that rate with at least `--min-samples` samples
 (default 10000) and `usbDataLoss` false, stops and saves it. `--allow-loss` accepts a lossy
 segment; `--timeout` (default 30 s) bounds the wait, after which it fails and prints the last
-segment it saw. Two-channel rates of 24 MSa/s and above always lose data, so they need `--allow-loss`.
+segment it saw. Two-channel rates of 24 MSa/s and above always lose data, so they need `--allow-loss`;
+without it `capture` fails after about 2 s in which every retained segment lost data.
 AutoSet selects Auto trigger and resumes acquisition to inspect fresh samples
 when stopped or single-held. Preset names are entered directly in the toolbar;
 the embedded browser does not need to support native JavaScript prompt dialogs.
@@ -199,20 +200,30 @@ The grid always shows ten divisions per axis, so with the trigger-aligned view
 - Trigger, AC coupling, invert, rejection filters, averaging, and bandwidth limit
   are software operations. The 20 MHz low-pass does not provide an analog
   anti-alias filter. External/AC-line triggers are unavailable on this hardware.
-- Windows live display uses acknowledged frames. Packets may be discarded when
-  the view is busy; sequence gaps reset the sample buffer. It is a segmented live
+- Windows live display uses acknowledged frames. While the view is busy the bridge
+  holds up to 512 KB of contiguous samples and sends them as one frame; beyond that
+  it drops them and the next frame starts a new segment. It is a segmented live
   preview, not a continuous lossless recording. SR export saves a retained segment
-  without filling gaps between discarded packets.
+  without filling gaps between segments.
 - The 6022BL has no sample memory; the device drops samples whenever USB does not
-  drain its FIFO, and nothing in the data marks the drop. The bridge infers loss from
-  timing: a gap between bulk reads longer than a 2 KB FIFO lasts breaks the segment,
-  and a read slower than its byte count allows (beyond 0.5 ms of host latency) is
-  flagged, kept as its own segment and shown as **USB LOSS**; `status.capture` and the
-  SR record `usbDataLoss`. Measured 2026-11-15 on this machine: USB delivered at most
-  about 42 MB/s, so two channels at 24 MSa/s (48 MB/s) and above lose data in every
-  read; at 4–16 MSa/s reads were clean but roughly half of the gaps between reads lost
-  data (about 4% of samples at 16 MSa/s), so segments often end at a read boundary.
-  Where inside a flagged read the samples are missing is not known.
+  drain its few-KB FIFO, and nothing in the data marks the drop. The bridge keeps 8
+  bulk transfers queued with WinUSB RAW_IO so USB never idles, and infers loss by
+  conservation: elapsed time × rate × 2 bytes against bytes received. A transfer
+  whose deficit rises by more than the FIFO plus 0.2 ms of data, judged from the
+  least-delayed completions in the 30 ms before and after it, is flagged, kept as
+  its own segment and shown as **USB LOSS**; `status.capture` and the SR record
+  `usbDataLoss`. Where inside a flagged transfer the samples are missing is not known.
+  Measured 2026-11-15 on the CAL square wave on this machine: two channels at
+  1–16 MSa/s stay continuous across transfers (200k-sample SRs, no broken
+  half-period); USB delivers about 45 MB/s, so two channels at 24 MSa/s (48 MB/s)
+  and above lose about 6% or more of the samples and are flagged throughout.
+- Sample rates depend on the firmware. With Hantek's driver installed for the bare
+  device (04B4:602A), Windows loads Hantek's stock firmware (bcdDevice 0x0000,
+  strings "ODM"/"Hantek6022BL") before the bridge sees the scope, so the bridge never
+  uploads its Ho-Ro firmware. The stock firmware samples only at 48/30/24/16/8/4/1
+  MSa/s and 500/200/100 kSa/s, ignores other rate codes, and has no test-signal
+  command; the bridge rejects other rates. The Ho-Ro firmware (other rates,
+  adjustable CAL, single-channel mode) needs the bare device bound to WinUSB instead.
 - The live view retains at most 200,000 points and displays at most 200 ms in
   the main plot. Long timebase settings are constrained by those existing limits.
   CSV exports the plotted trace (including display decimation), not every USB byte.
