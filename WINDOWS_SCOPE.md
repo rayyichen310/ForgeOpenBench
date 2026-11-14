@@ -217,13 +217,15 @@ The grid always shows ten divisions per axis, so with the trigger-aligned view
   1–16 MSa/s stay continuous across transfers (200k-sample SRs, no broken
   half-period); USB delivers about 45 MB/s, so two channels at 24 MSa/s (48 MB/s)
   and above lose about 6% or more of the samples and are flagged throughout.
-- Sample rates depend on the firmware. With Hantek's driver installed for the bare
-  device (04B4:602A), Windows loads Hantek's stock firmware (bcdDevice 0x0000,
-  strings "ODM"/"Hantek6022BL") before the bridge sees the scope, so the bridge never
-  uploads its Ho-Ro firmware. The stock firmware samples only at 48/30/24/16/8/4/1
-  MSa/s and 500/200/100 kSa/s, ignores other rate codes, and has no test-signal
-  command; the bridge rejects other rates. The Ho-Ro firmware (other rates,
-  adjustable CAL, single-channel mode) needs the bare device bound to WinUSB instead.
+- Firmware: with Hantek's driver installed for the bare device (04B4:602A), Windows
+  loads Hantek's stock firmware (bcdDevice 0x0000, strings "ODM"/"Hantek6022BL")
+  before the bridge sees the scope. On connect the bridge writes its Ho-Ro firmware
+  (bcdDevice 0x0210) into the FX2's RAM; a replug restores the stock firmware, so the
+  vendor software keeps working without a driver change. The stock firmware samples
+  only at 48/30/24/16/8/4/1 MSa/s and 500/200/100 kSa/s and ignores other rate codes;
+  if it is still running, the bridge rejects other rates. Ho-Ro also supports a single
+  channel (0xE4), which keeps 24 and 30 MSa/s continuous on the CAL wave, but the
+  Scope view always streams two channels.
 - The live view retains at most 200,000 points and displays at most 200 ms in
   the main plot. Long timebase settings are constrained by those existing limits.
   CSV exports the plotted trace (including display decimation), not every USB byte.

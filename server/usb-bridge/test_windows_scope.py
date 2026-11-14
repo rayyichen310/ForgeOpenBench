@@ -54,12 +54,27 @@ class WindowsScopeTests(unittest.TestCase):
         self.assertFalse(bridge.state.capturing)
         return [call.args[0] for call in send.call_args_list]
 
+    def test_connect_replaces_stock_firmware_with_horo_in_ram(self):
+        stock = Mock(idVendor=0x04B5, idProduct=0x602A, bcdDevice=0x0000)
+        horo = Mock(idVendor=0x04B5, idProduct=0x602A, bcdDevice=0x0210)
+        with patch.object(bridge, '_find_usb', return_value=stock),                 patch.object(bridge, '_upload_firmware') as upload,                 patch.object(bridge, '_wait_horo_firmware', return_value=horo),                 patch.object(bridge.usb.util, 'claim_interface'),                 patch.object(bridge.usb.util, 'dispose_resources'):
+            result = asyncio.run(bridge.handle_usb_connect(None, {'vid': 0x04B5, 'pid': 0x602A}))
+        self.assertEqual(result['type'], 'usb_connected')
+        self.assertEqual(upload.call_args.args[1].name, 'hantek-6022bl-scope.fw')
+        self.assertIs(bridge.state.device, horo)
+        with patch.object(bridge, '_find_usb', return_value=horo), patch.object(bridge, '_upload_firmware') as upload,                 patch.object(bridge.usb.util, 'claim_interface'):
+            asyncio.run(bridge.handle_usb_connect(None, {'vid': 0x04B5, 'pid': 0x602A}))
+        upload.assert_not_called()
+
     def test_sample_rate_codes_follow_the_running_firmware(self):
         def rate_code(bcd, hz):
             dev = Mock(bcdDevice=bcd)
             bridge.state.config.sample_rate_hz = hz
             with patch.object(bridge.time, 'sleep'):
                 self.assertTrue(bridge._hantek_setup(dev, bridge.state.config))
+            requests = [c.args[1] for c in dev.ctrl_transfer.call_args_list]
+            # Ho-Ro remembers a single-channel setting from another program; stock has no 0xE4.
+            self.assertEqual(bridge.HANTEK_SET_NUMCHANNELS in requests, bcd >= 0x0200)
             return next(c.args[4][0] for c in dev.ctrl_transfer.call_args_list
                         if c.args[1] == bridge.HANTEK_SET_SAMPLERATE)
         self.assertEqual((rate_code(0x0000, 500_000), rate_code(0x0210, 500_000)), (50, 150))

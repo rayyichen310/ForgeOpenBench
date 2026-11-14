@@ -106,6 +106,7 @@ HANTEK_SET_CH0_RANGE   = 0xE0   # value: 1=5V, 2=2.5V, 5=1V, 10=500mV
 HANTEK_SET_CH1_RANGE   = 0xE1
 HANTEK_SET_SAMPLERATE  = 0xE2   # value: see HANTEK_SAMPLERATE_MAP / HANTEK_STOCK_SAMPLERATE_MAP
 HANTEK_START           = 0xE3   # value: 1=start, 0=stop
+HANTEK_SET_NUMCHANNELS = 0xE4   # Ho-Ro only: 1 or 2; persists until changed or the scope is replugged
 HANTEK_SET_TEST_SIG    = 0xE6   # Calibration pulse frequency (NOT 0xE4!)
 # Ho-Ro firmware frequency byte encoding (LibUsbScope.py):
 #   0       -> 100 Hz (sigrok FW compat)
@@ -141,7 +142,7 @@ def _dso_samplerate_map(dev=None) -> dict:
     """E2 codes of the firmware running on `dev` (or the connected device)."""
     dev = dev if dev is not None else state.device
     bcd = getattr(dev, "bcdDevice", None)
-    if isinstance(bcd, int) and bcd < 0x0200:
+    if isinstance(bcd, int) and bcd < HORO_MIN_BCD:
         return HANTEK_STOCK_SAMPLERATE_MAP
     return HANTEK_SAMPLERATE_MAP
 
@@ -295,6 +296,26 @@ def _wait_renumeration(vid: int, pid: int, timeout: float = 15.0) -> Optional[us
             return dev
         time.sleep(0.5)
     log.warning(f"Renumeration timeout — device did not reappear as {vid:04x}:{pid:04x} or 1d50:608d")
+    return None
+
+HORO_MIN_BCD = 0x0200  # Ho-Ro firmware reports its version as bcdDevice; stock reports 0x0000
+
+
+def _wait_horo_firmware(timeout: float = 15.0) -> Optional[usb.core.Device]:
+    """Wait until the scope re-enumerates with Ho-Ro firmware and Windows lets us open it."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        time.sleep(0.5)
+        dev = _find_usb(idVendor=VID_SCOPE, idProduct=PID_SCOPE)
+        if dev is None or dev.bcdDevice < HORO_MIN_BCD:
+            continue
+        try:
+            usb.util.claim_interface(dev, 0)  # fails until the WinUSB driver is bound
+        except (usb.core.USBError, NotImplementedError):
+            usb.util.dispose_resources(dev)
+            continue
+        log.info("Scope running Ho-Ro firmware 0x%04x", dev.bcdDevice)
+        return dev
     return None
 
 # ---------------------------------------------------------------------------
@@ -522,6 +543,9 @@ def _hantek_setup(dev: usb.core.Device, cfg) -> bool:
     if not _cmd("CH1_RANGE", HANTEK_SET_CH1_RANGE, bytes([HANTEK_VOLT_RANGE[cfg.voltage_range_ch2]])):
         return False
     time.sleep(0.01)
+    # Forge always reads interleaved CH1/CH2; the stock firmware has no 0xE4 and is always dual.
+    if rates is HANTEK_SAMPLERATE_MAP and not _cmd("NUMCHANNELS", HANTEK_SET_NUMCHANNELS, bytes([2])):
+        return False
     if not _cmd("SAMPLERATE", HANTEK_SET_SAMPLERATE, bytes([rate_code])):
         return False
     time.sleep(0.01)
@@ -1311,6 +1335,20 @@ async def handle_usb_connect(ws: WebSocketServerProtocol, req: dict) -> dict:
                 return {"type": "usb_error", "message": "Device did not renumerate after firmware upload"}
         except Exception as e:
             return {"type": "usb_error", "message": f"Firmware upload failed: {e}"}
+
+    if (entry["mode"] == "dso" and (dev.idVendor, dev.idProduct) == (VID_SCOPE, PID_SCOPE)
+            and dev.bcdDevice < HORO_MIN_BCD):
+        # Hantek's driver loaded its stock firmware. The FX2 accepts a RAM load at any time, so
+        # replace it with Ho-Ro (all rates, CAL frequency, single channel); a replug restores stock.
+        try:
+            usb.util.claim_interface(dev, 0)
+            _upload_firmware(dev, FIRMWARE_DIR / "hantek-6022bl-scope.fw")
+            usb.util.dispose_resources(dev)
+            dev = _wait_horo_firmware()
+        except Exception as e:
+            return {"type": "usb_error", "message": f"Ho-Ro firmware load over stock firmware failed: {e}"}
+        if dev is None:
+            return {"type": "usb_error", "message": "Scope did not come back with the Ho-Ro firmware; replug it"}
 
     try:
         dev.set_configuration()
