@@ -330,6 +330,7 @@ class CaptureConfig:
     voltage_range: float = 1.0  # Vpp for DSO
     voltage_range_ch2: float = 1.0
     test_signal: str = "off"   # "off", "32 Hz".."100 kHz"
+    dso_channels: int = 2      # 1 = CH1 only (Ho-Ro firmware), streamed with CH2 padded
     sigrok: bool = False
     sigrok_driver: str = ""
 
@@ -543,8 +544,8 @@ def _hantek_setup(dev: usb.core.Device, cfg) -> bool:
     if not _cmd("CH1_RANGE", HANTEK_SET_CH1_RANGE, bytes([HANTEK_VOLT_RANGE[cfg.voltage_range_ch2]])):
         return False
     time.sleep(0.01)
-    # Forge always reads interleaved CH1/CH2; the stock firmware has no 0xE4 and is always dual.
-    if rates is HANTEK_SAMPLERATE_MAP and not _cmd("NUMCHANNELS", HANTEK_SET_NUMCHANNELS, bytes([2])):
+    # Always sent on Ho-Ro, which keeps the last count; the stock firmware has no 0xE4 and is always dual.
+    if rates is HANTEK_SAMPLERATE_MAP and not _cmd("NUMCHANNELS", HANTEK_SET_NUMCHANNELS, bytes([cfg.dso_channels])):
         return False
     if not _cmd("SAMPLERATE", HANTEK_SET_SAMPLERATE, bytes([rate_code])):
         return False
@@ -749,7 +750,8 @@ def _capture_loop_rust() -> None:
 #   idles between transfers (sync reads lost samples at every read boundary from 4 MSa/s;
 #   queued reads without RAW_IO still lost ~1 KB per transfer at 16 MSa/s);
 # - infer loss by conservation: elapsed time * rate * 2 bytes against bytes received.
-# Two channels at 24 MSa/s or more exceed what USB 2.0 delivers (~45 MB/s) and stay lossy.
+# Two channels at 24 MSa/s or more exceed what USB 2.0 delivers (~45 MB/s) and stay lossy;
+# one channel (Ho-Ro 0xE4) stays continuous up to 30 MSa/s.
 DSO_FIFO_BYTES = 2048        # endpoint buffering allowed for before a deficit counts as loss
 DSO_LATENCY_SLACK_S = 0.0002 # callback-latency spread between the least-delayed completions
 DSO_WINDOW_S = 0.03          # completions compared before and after each transfer
@@ -769,8 +771,8 @@ class DsoLossTracker:
     FIFO data and whatever overflowed between the start command and the first transfer.
     """
 
-    def __init__(self, rate_hz: int):
-        self.bps = rate_hz * 2
+    def __init__(self, rate_hz: int, channels: int = 2):
+        self.bps = rate_hz * channels
         self.threshold = DSO_FIFO_BYTES + self.bps * DSO_LATENCY_SLACK_S
         self.t0: Optional[float] = None
         self.received = 0
@@ -903,16 +905,24 @@ class _BulkInQueue:
             self._set_raw_io(False)
 
 
-def _dso_transfer_size(rate_hz: int) -> int:
+def _dso_transfer_size(rate_hz: int, channels: int = 2) -> int:
     """About 20 ms of data per transfer, a multiple of 512 as RAW_IO requires."""
-    return max(4096, min(262_144, ((rate_hz * 2 // 50 + 511) // 512) * 512))
+    return max(4096, min(262_144, ((rate_hz * channels // 50 + 511) // 512) * 512))
+
+
+def _pad_ch2(ch1: bytes) -> bytes:
+    """Interleave single-channel samples with a mid-scale CH2 so the page keeps one format."""
+    out = bytearray([128]) * (2 * len(ch1))
+    out[0::2] = ch1
+    return bytes(out)
 
 
 def _capture_loop_windows() -> None:
     """Stream interleaved DSO samples over queued WinUSB transfers using the binary protocol."""
     dev = state.device
     rate = state.config.sample_rate_hz
-    tracker = DsoLossTracker(rate)
+    channels = state.config.dso_channels
+    tracker = DsoLossTracker(rate, channels)
     tracker.stats["dropped_for_page"] = 0
     state.dso_loss = tracker.stats
     sequence = 0
@@ -934,7 +944,7 @@ def _capture_loop_windows() -> None:
     queue = None
     log_t0 = time.perf_counter()
     try:
-        queue = _BulkInQueue(dev, BULK_IN_EP_DSO, _dso_transfer_size(rate))
+        queue = _BulkInQueue(dev, BULK_IN_EP_DSO, _dso_transfer_size(rate, channels))
         tracker.stats["raw_io"] = queue.raw_io
         while not state.stop_event.is_set():
             data = queue.next()
@@ -942,7 +952,8 @@ def _capture_loop_windows() -> None:
                 continue
             now = time.perf_counter()
             for chunk, lossy in tracker.add(now, data):
-                chunk = chunk[:len(chunk) & ~1]  # whole CH1/CH2 pairs; transfers are 512-byte multiples
+                # Whole CH1/CH2 pairs; transfers are 512-byte multiples.
+                chunk = _pad_ch2(chunk) if channels == 1 else chunk[:len(chunk) & ~1]
                 if backlog and (lossy or backlog_lossy or len(backlog) + len(chunk) > DSO_BACKLOG_BYTES):
                     if not state.clients or state.frame_ack.is_set():
                         send()
@@ -1406,6 +1417,13 @@ async def handle_usb_configure(_ws: WebSocketServerProtocol, req: dict) -> dict:
         for key in ("voltage_range", "voltage_range_ch2"):
             if req.get(key, getattr(state.config, key)) not in HANTEK_VOLT_RANGE:
                 return {"type": "usb_error", "message": "Unsupported DSO input range"}
+        channels = req.get("dso_channels", state.config.dso_channels)
+        if channels not in (1, 2):
+            return {"type": "usb_error", "message": "Unsupported DSO channel count"}
+        if channels == 1 and rates is not HANTEK_SAMPLERATE_MAP:
+            return {"type": "usb_error", "message":
+                    "The scope runs Hantek's stock firmware, which has no single-channel mode; enable CH2"}
+        state.config.dso_channels = channels
     state.config.sample_rate_hz  = req.get("sample_rate_hz", state.config.sample_rate_hz)
     state.config.sample_width    = req.get("sample_width", state.config.sample_width)
     state.config.sigrok          = req.get("sigrok", state.config.sigrok)

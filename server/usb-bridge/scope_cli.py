@@ -74,7 +74,8 @@ async def capture(ws, args):
         wanted += ' without USB data loss'
     waited = f'after {LOSSY_POLLS} lossy status polls' if lossy_polls >= LOSSY_POLLS else f'within {args.timeout} s'
     raise RuntimeError(f'No segment with {wanted} {waited}; last retained segment: {segment}. '
-                       'Two channels at 24 MSa/s or more reach the USB 2.0 bandwidth limit; lower the rate or pass --allow-loss.')
+                       'USB 2.0 cannot carry two channels at 24 MSa/s or more, or one at 48 MSa/s; lower the rate, '
+                       'disable CH2 and Math to stream CH1 alone up to 30 MSa/s, or pass --allow-loss.')
 
 
 async def run(args):

@@ -59,8 +59,10 @@ It stops, applies the patch, runs (Run from Stop reconfigures the hardware and d
 segment), waits for a retained segment at that rate with at least `--min-samples` samples
 (default 10000) and `usbDataLoss` false, stops and saves it. `--allow-loss` accepts a lossy
 segment; `--timeout` (default 30 s) bounds the wait, after which it fails and prints the last
-segment it saw. Two-channel rates of 24 MSa/s and above always lose data, so they need `--allow-loss`;
-without it `capture` fails after about 2 s in which every retained segment lost data.
+segment it saw. Two channels at 24 MSa/s and above, and one channel at 48 MSa/s, always lose
+data, so they need `--allow-loss`; without it `capture` fails after about 2 s in which every
+retained segment lost data. For CH1 alone at 24 or 30 MSa/s, pass
+`"ch2Vertical":{"enabled":false},"math":{"enabled":false}` in `--params`.
 AutoSet selects Auto trigger and resumes acquisition to inspect fresh samples
 when stopped or single-held. Preset names are entered directly in the toolbar;
 the embedded browser does not need to support native JavaScript prompt dialogs.
@@ -137,7 +139,8 @@ because the offline tests pass.
 ## Single-segment SR export
 
 Use `sr --output <new-file.sr>` while running or after Stop/Single-held. It saves
-the latest retained, contiguous CH1/CH2 samples, including a hidden channel, before
+the latest retained, contiguous CH1/CH2 samples, including a hidden channel (in
+single-channel mode CH2 holds a constant mid-scale placeholder, not a measurement), before
 display decimation and software zero correction, AC/GND coupling, inversion, filters, averaging,
 Math, or FFT. The exported interval can be longer than the trigger-cropped plot.
 Clear or a new Run discards the previous snapshot; a new Run needs fresh samples.
@@ -223,9 +226,14 @@ The grid always shows ten divisions per axis, so with the trigger-aligned view
   (bcdDevice 0x0210) into the FX2's RAM; a replug restores the stock firmware, so the
   vendor software keeps working without a driver change. The stock firmware samples
   only at 48/30/24/16/8/4/1 MSa/s and 500/200/100 kSa/s and ignores other rate codes;
-  if it is still running, the bridge rejects other rates. Ho-Ro also supports a single
-  channel (0xE4), which keeps 24 and 30 MSa/s continuous on the CAL wave, but the
-  Scope view always streams two channels.
+  if it is still running, the bridge rejects other rates and single-channel mode.
+- Single channel: when CH2 and Math are both off, the page configures `dso_channels: 1`;
+  the bridge sends Ho-Ro 0xE4 = 1 so the scope streams CH1 alone (1 byte per sample) and
+  pads each sample with a mid-scale CH2 byte, so the page parses one format. Ho-Ro keeps
+  the channel count across runs, so every start sends it. Measured 2026-11-15 on the CAL
+  wave through Forge: CH1 alone at 16, 24 and 30 MSa/s gave 200k-sample SRs with no
+  broken half-period, and 10 s at 30 MSa/s flagged none of 1,141 transfers; 48 MSa/s
+  (48 MB/s) stays lossy.
 - The live view retains at most 200,000 points and displays at most 200 ms in
   the main plot. Long timebase settings are constrained by those existing limits.
   CSV exports the plotted trace (including display decimation), not every USB byte.

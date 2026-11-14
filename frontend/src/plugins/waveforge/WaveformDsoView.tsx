@@ -301,6 +301,10 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
   const horizontalRef = useRef(horizontal);
   const triggerRef = useRef(trigger);
   const sampleRateRef = useRef(sampleRate);
+  // One channel halves the USB load, which keeps CH1 continuous up to 30 MSa/s.
+  const dsoChannels: 1 | 2 = !ch2Vertical.enabled && !math.enabled ? 1 : 2;
+  const dsoChannelsRef = useRef(dsoChannels);
+  dsoChannelsRef.current = dsoChannels;
   useEffect(() => { ch1VerticalRef.current = ch1Vertical; }, [ch1Vertical]);
   useEffect(() => { ch2VerticalRef.current = ch2Vertical; }, [ch2Vertical]);
   useEffect(() => { horizontalRef.current = horizontal; }, [horizontal]);
@@ -339,6 +343,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
             sample_width: 8,
             voltage_range: vDivToVpp(ch1VerticalRef.current.vDiv / ch1VerticalRef.current.probe),
             voltage_range_ch2: vDivToVpp(ch2VerticalRef.current.vDiv / ch2VerticalRef.current.probe),
+            dso_channels: dsoChannelsRef.current,
           });
           dataOffRef.current = transport.onData(chunk => pushDataRef.current(chunk));
           await transport.start();
@@ -357,7 +362,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
       })();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sampleRate, inputVpp1, inputVpp2, ch1Vertical.probe, ch2Vertical.probe]);
+  }, [sampleRate, inputVpp1, inputVpp2, ch1Vertical.probe, ch2Vertical.probe, dsoChannels]);
   // Clear phosphor history when trigger mode changes — old ghosts don't match new mode behavior
   useEffect(() => {
     phosphorTraces.current = [];
@@ -986,6 +991,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
         sample_width: 8,
         voltage_range: inputVpp1,
         voltage_range_ch2: inputVpp2,
+        dso_channels: dsoChannelsRef.current,
       });
       dataOffRef.current?.();
       dataOffRef.current = transport.onData(chunk => pushDataRef.current(chunk));

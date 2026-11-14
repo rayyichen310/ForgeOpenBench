@@ -121,6 +121,32 @@ class WindowsScopeTests(unittest.TestCase):
         self.assertEqual([bool(r & bridge.DSO_FLAG_LOSS) for r in reserved], [False, True, True])
         self.assertEqual(bridge.state.dso_loss['lossy'], 2)
 
+    def test_single_channel_capture_pads_ch2_and_counts_one_byte_per_sample(self):
+        # One channel at 1 MSa/s is 1 MB/s: 20,000 bytes every 20 ms are complete, not half lost.
+        bridge.state.config.dso_channels = 1
+        data = bytes(range(100)) * 200
+        frames = self._run_windows_capture(1_000_000, [(0.02 * k, data) for k in range(6)])
+        self.assertTrue(frames)
+        self.assertFalse(any(struct.unpack('<I', f[20:24])[0] & bridge.DSO_FLAG_LOSS for f in frames))
+        payload = b''.join(f[24:] for f in frames)
+        self.assertEqual(payload[0::2], data * (len(payload) // 40_000))
+        self.assertEqual(set(payload[1::2]), {128})
+        self.assertEqual(bridge.state.dso_loss['lossy'], 0)
+
+    def test_single_channel_mode_needs_horo_and_sets_the_channel_count(self):
+        bridge.state.device = Mock(bcdDevice=0x0000)
+        result = asyncio.run(bridge.handle_usb_configure(None, {'mode': 'dso', 'dso_channels': 1}))
+        self.assertEqual(result['type'], 'usb_error')
+        self.assertEqual(bridge.state.config.dso_channels, 2)
+        dev = Mock(bcdDevice=0x0210)
+        bridge.state.device = dev
+        result = asyncio.run(bridge.handle_usb_configure(None, {'mode': 'dso', 'dso_channels': 1}))
+        self.assertEqual(result['type'], 'usb_configured')
+        with patch.object(bridge.time, 'sleep'):
+            self.assertTrue(bridge._hantek_setup(dev, bridge.state.config))
+        sent = [c.args[4] for c in dev.ctrl_transfer.call_args_list if c.args[1] == bridge.HANTEK_SET_NUMCHANNELS]
+        self.assertEqual(sent, [bytes([1])])
+
     def test_loss_tracker_ignores_a_late_callback(self):
         # 16 MSa/s: 262,144 bytes every 8.192 ms; one completion is noticed 3 ms late.
         tracker = bridge.DsoLossTracker(16_000_000)

@@ -17,6 +17,8 @@ export interface UsbConfig {
   sample_width: 8 | 16;
   voltage_range?: number; // Vpp for DSO mode (5, 2.5, 1, 0.5)
   voltage_range_ch2?: number;
+  /** DSO only: 1 streams CH1 alone (Ho-Ro firmware) with CH2 padded at mid-scale. */
+  dso_channels?: 1 | 2;
   test_signal?: string; // "off", "1kHz", "10kHz", "100kHz"
   sigrok?: boolean;
   sigrok_driver?: string;
