@@ -6,6 +6,8 @@
 - **WaveForge Scope — USB data-loss marking.** The 6022BL has no sample memory, so samples are dropped on the device whenever USB does not drain its FIFO. The Windows bridge compares bytes received with the time each bulk read and each gap between reads took. A gap longer than the FIFO lasts skips a sequence number, so the view starts a new segment; a read that delivered fewer bytes than its duration requires sets flag `0x80` in the frame's reserved low byte. The view keeps a flagged chunk as a segment of its own, shows **USB LOSS** in the status strip, and reports `usbDataLoss` in `status.capture` and in the SR's `scope-settings.json` (`null` for older captures). Per-start counters are in the bridge's `usb_diag` reply as `dso_loss`.
 - **WaveForge Scope — `scope_cli.py capture`.** Stops, applies the `--params` patch, runs on freshly configured hardware, and saves the first retained segment at the requested rate with at least `--min-samples` samples and no USB data loss (`--allow-loss` accepts lossy segments). Fails after `--timeout` seconds with the last segment it saw.
 
+- **WaveForge Scope — Math `Avg(A)`.** Trailing moving average of source A over a window set in µs (`math.avgS` in seconds for `set` and `load-sr`, default 10 µs). Averaging a PWM over one period shows its duty times the high level, so a slow time base shows how the duty changes. Saved presets without `avgS` still load.
+
 ### Changed
 - Disabled Ext and AC Line trigger sources read "(not supported)" instead of naming the 6022BL; no supported scope (6022BL or 6022BE) has these inputs.
 

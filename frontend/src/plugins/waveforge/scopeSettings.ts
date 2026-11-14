@@ -1,11 +1,13 @@
 import { VDIV_STEPS, SDIV_STEPS, SAMPLE_RATES_DSO } from './scopeConstants';
 
 const vertical = {enabled: 'boolean', vDiv: VDIV_STEPS, position: 'number', coupling: ['dc','ac','gnd'], probe: [1,10,100], invert: 'boolean', bwLimit: 'boolean'};
+// Keys a complete preset may omit (added after presets were first saved).
+const OPTIONAL = new Set(['scope.math.avgS']);
 const schema: Record<string, unknown> = {
   ch1Vertical: vertical, ch2Vertical: vertical,
   horizontal: {sDiv: SDIV_STEPS, position: 'number', acquireMode: ['normal','peak','average'], averageCount: 'positive', rollMode: 'boolean'},
   trigger: {source: ['ch1','ch2'], level: 'number', slope: ['rise','fall','both'], mode: ['auto','normal','single','smart'], coupling: ['dc','ac','hfrej','lfrej','noiserej'], holdoff: 'nonnegative'},
-  math: {enabled: 'boolean', sourceA: ['ch1','ch2'], sourceB: ['ch1','ch2'], op: ['add','sub','mul','div','fft','xy']},
+  math: {enabled: 'boolean', sourceA: ['ch1','ch2'], sourceB: ['ch1','ch2'], op: ['add','sub','mul','div','fft','xy','avg'], avgS: 'positive'},
   sampleRate: SAMPLE_RATES_DSO.map(rate => rate.hz), phosphorEnabled: 'boolean', phosphorIntensity: 'nonnegative', phosphorTracesCount: 'positive',
 };
 
@@ -14,7 +16,7 @@ export function validateScopePatch(patch: Record<string, unknown>, complete = fa
     if (Array.isArray(rule)) { if (!rule.includes(value)) throw new Error(`Unsupported ${path}`); return; }
     if (typeof rule === 'object' && rule !== null) {
       if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Invalid ${path}`);
-      if (complete && Object.keys(rule).some(key => !(key in value))) throw new Error(`Incomplete ${path}`);
+      if (complete && Object.keys(rule).some(key => !(key in value) && !OPTIONAL.has(`${path}.${key}`))) throw new Error(`Incomplete ${path}`);
       for (const [key, item] of Object.entries(value)) {
         if (!(key in rule)) throw new Error(`Unknown setting ${path}.${key}`);
         validate(item, (rule as Record<string, unknown>)[key], `${path}.${key}`);

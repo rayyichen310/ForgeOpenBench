@@ -38,6 +38,21 @@ export const xyPaths: uPlot.Series.PathBuilder = (plot, series) => {
   return {stroke};
 };
 
+export const DEFAULT_AVG_S = 1e-5;
+
+// Trailing moving average over `window` samples; the first samples average what exists so far.
+export function movingAverage(src: ArrayLike<number>, window: number): number[] {
+  const w = Math.max(1, Math.round(window));
+  const out = new Array<number>(src.length);
+  let sum = 0;
+  for (let i = 0; i < src.length; i++) {
+    sum += src[i];
+    if (i >= w) sum -= src[i - w];
+    out[i] = sum / Math.min(i + 1, w);
+  }
+  return out;
+}
+
 export function findTriggerIndex(buf: number[], trigger: TriggerState, sampleRate: number, searchWindowSamples?: number): number {
   if (buf.length < 100) return -1;
   const level = trigger.level;
@@ -131,8 +146,11 @@ export function renderNow(
   const rn = r1.length;
 
   const doMath = ctx.mathRef.current.enabled && ctx.mathRef.current.op !== "fft" && ctx.mathRef.current.op !== "xy";
-  const mathArr = new Array(rn).fill(0);
-  if (doMath) {
+  let mathArr = new Array(rn).fill(0);
+  if (doMath && ctx.mathRef.current.op === "avg") {
+    const a = ctx.mathRef.current.sourceA === "ch2" ? r2 : r1;
+    mathArr = movingAverage(a, (ctx.mathRef.current.avgS ?? DEFAULT_AVG_S) * (ctx.sampleRateRef.current || 4_000_000));
+  } else if (doMath) {
     const a = ctx.mathRef.current.sourceA === "ch2" ? r2 : r1;
     const b = ctx.mathRef.current.sourceB === "ch2" ? r2 : r1;
     for (let i = 0; i < rn; i++) {

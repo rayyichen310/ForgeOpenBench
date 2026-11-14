@@ -44,7 +44,8 @@ export interface MathState {
   enabled: boolean;
   sourceA: "ch1" | "ch2";
   sourceB: "ch1" | "ch2";
-  op: "add" | "sub" | "mul" | "div" | "fft" | "xy";
+  op: "add" | "sub" | "mul" | "div" | "fft" | "xy" | "avg";
+  avgS?: number;       // "avg": moving-average window in seconds (default DEFAULT_AVG_S)
 }
 
 export type MeasurementKey =

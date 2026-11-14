@@ -1,5 +1,6 @@
 import { CollapsibleSection } from "./CollapsibleSection";
 import type { MathState } from "./scopeTypes";
+import { DEFAULT_AVG_S } from "./renderEngine";
 
 interface Props {
   state: MathState;
@@ -55,8 +56,25 @@ export function MathPanel({ state, onChange, disabled, fftPeaksEnabled, onToggle
               <option value="div">A / B</option>
               <option value="fft">FFT(A)</option>
               <option value="xy">XY (A vs B)</option>
+              <option value="avg">Avg(A)</option>
             </select>
           </div>
+
+          {/* Moving-average window */}
+          {state.op === "avg" && (
+            <div className="flex items-center gap-1">
+              <span className="text-[10px] text-fob-text-dim w-6">µs</span>
+              <input
+                type="number"
+                min={0.01}
+                step="any"
+                className="flex-1 bg-fob-bg border border-fob-border rounded px-1 py-0.5 text-[11px] text-fob-text"
+                value={+((state.avgS ?? DEFAULT_AVG_S) * 1e6).toPrecision(6)}
+                onChange={(e) => { const us = Number(e.target.value); if (us > 0) onChange({ ...state, avgS: us * 1e-6 }); }}
+                disabled={disabled}
+              />
+            </div>
+          )}
 
           {/* FFT peak markers */}
           {state.op === "fft" && onToggleFftPeaks && (
@@ -73,7 +91,7 @@ export function MathPanel({ state, onChange, disabled, fftPeaksEnabled, onToggle
           )}
 
           {/* Source B */}
-          {state.op !== "fft" && (
+          {state.op !== "fft" && state.op !== "avg" && (
             <div className="flex items-center gap-1">
               <span className="text-[10px] text-fob-text-dim w-6">B</span>
               <select
