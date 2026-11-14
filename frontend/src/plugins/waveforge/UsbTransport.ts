@@ -213,6 +213,7 @@ export class UsbTransport implements IUsbTransport {
     const sequence = reserved >>> 8;
     chunk.discontinuous = !isLa && sequence > 0 && this._lastSequence > 0 && sequence !== this._lastSequence + 1;
     this._lastSequence = sequence;
+    chunk.lossy = !isLa && (reserved & 0x80) !== 0;
     try { this.dataHandlers.forEach(h => h(chunk)); }
     finally { if (!isLa && sequence > 0) this.ws?.send(JSON.stringify({type: "usb_frame_ack"})); }
   }

@@ -25,7 +25,8 @@ export async function parseScopeSr(buffer: ArrayBuffer): Promise<ScopeCapture> {
   });
   if (meta.settings?.sampleRate !== meta.sampleRate) throw new Error('SR settings do not match its sample rate');
   return {sampleRate: meta.sampleRate, capturedAt: meta.capturedAt, settings: meta.settings,
-    ch1: channels[0], ch2: channels[1]};
+    ch1: channels[0], ch2: channels[1],
+    ...(typeof meta.usbDataLoss === 'boolean' ? {usbDataLoss: meta.usbDataLoss} : {})};
 }
 
 export function replayWindow(capture: ScopeCapture, window: ReplayWindow = {}): ScopeCapture {

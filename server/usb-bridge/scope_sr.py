@@ -48,6 +48,11 @@ def build_sr(snapshot):
     if snapshot.get('zeroCorrectionAppliedToSamples', False) is not False:
         raise ValueError('SR samples must remain uncorrected by zero calibration')
     summary['zeroCorrectionAppliedToSamples'] = False
+    loss = snapshot.get('usbDataLoss')
+    if loss is not None and type(loss) is not bool:
+        raise ValueError('usbDataLoss must be true, false or null')
+    # null: the capture predates loss detection, so its continuity is unknown.
+    summary['usbDataLoss'] = loss
     if 'zeroCalibration' in snapshot:
         zero = snapshot['zeroCalibration']
         if not isinstance(zero, dict) or set(zero) != {'ch1', 'ch2'}:

@@ -48,6 +48,18 @@ $python = '.\.venv\Scripts\python.exe'
 ```
 
 Other actions: `autoset`, `force`, `clear`, `reference`, `zero`, `zero-reset`. The view must be open.
+
+`capture` replaces the set → status → run → stop → sr sequence for a fresh SR:
+
+```powershell
+& $python server/usb-bridge/scope_cli.py capture --params '{"sampleRate":16000000}' --min-samples 100000 --output new-trace.sr
+```
+
+It stops, applies the patch, runs (Run from Stop reconfigures the hardware and discards the old
+segment), waits for a retained segment at that rate with at least `--min-samples` samples
+(default 10000) and `usbDataLoss` false, stops and saves it. `--allow-loss` accepts a lossy
+segment; `--timeout` (default 30 s) bounds the wait, after which it fails and prints the last
+segment it saw. Two-channel rates of 24 MSa/s and above always lose data, so they need `--allow-loss`.
 AutoSet selects Auto trigger and resumes acquisition to inspect fresh samples
 when stopped or single-held. Preset names are entered directly in the toolbar;
 the embedded browser does not need to support native JavaScript prompt dialogs.
@@ -134,7 +146,8 @@ after stopping does not reinterpret the retained capture.
 The native sigrok v2 archive stores float32 voltage samples. An extra
 `scope-settings.json` entry stores sample count, sample rate, probe factors,
 nominal hardware ranges, captured display settings, and `zeroCalibration` profiles
-matching the retained capture and current conditions (or null per channel).
+matching the retained capture and current conditions (or null per channel), and
+`usbDataLoss` (true, false, or null for captures made before loss detection).
 `zeroCorrectionAppliedToSamples` is always false: analog entries remain nominal,
 uncorrected voltages. To reconstruct corrected DC values, subtract that channel's
 recorded `offsetVolts` once. Sigrok ignores the extra JSON entry and reads the
@@ -190,6 +203,16 @@ The grid always shows ten divisions per axis, so with the trigger-aligned view
   the view is busy; sequence gaps reset the sample buffer. It is a segmented live
   preview, not a continuous lossless recording. SR export saves a retained segment
   without filling gaps between discarded packets.
+- The 6022BL has no sample memory; the device drops samples whenever USB does not
+  drain its FIFO, and nothing in the data marks the drop. The bridge infers loss from
+  timing: a gap between bulk reads longer than a 2 KB FIFO lasts breaks the segment,
+  and a read slower than its byte count allows (beyond 0.5 ms of host latency) is
+  flagged, kept as its own segment and shown as **USB LOSS**; `status.capture` and the
+  SR record `usbDataLoss`. Measured 2026-11-15 on this machine: USB delivered at most
+  about 42 MB/s, so two channels at 24 MSa/s (48 MB/s) and above lose data in every
+  read; at 4–16 MSa/s reads were clean but roughly half of the gaps between reads lost
+  data (about 4% of samples at 16 MSa/s), so segments often end at a read boundary.
+  Where inside a flagged read the samples are missing is not known.
 - The live view retains at most 200,000 points and displays at most 200 ms in
   the main plot. Long timebase settings are constrained by those existing limits.
   CSV exports the plotted trace (including display decimation), not every USB byte.

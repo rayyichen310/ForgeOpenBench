@@ -97,6 +97,9 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
   const ch1Buf = useRef<number[]>([]);
   const ch2Buf = useRef<number[]>([]);
   const captureRef = useRef<ScopeCapture | null>(null);
+  // A chunk with USB loss is kept as its own segment so clean chunks never join across the gap.
+  const segmentLossyRef = useRef(false);
+  const [usbDataLoss, setUsbDataLoss] = useState(false);
   // Bumped when a held capture is replaced outside acquisition (SR replay) so it is redrawn.
   const [heldVersion, setHeldVersion] = useState(0);
   const heldRenderedRef = useRef<(() => void) | null>(null);
@@ -806,10 +809,13 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
   const totalBytes = useRef(0);
   const dataAgeT0 = useRef(0);
   const pushData = useCallback((chunk: UsbDataChunk) => {
-    if (chunk.discontinuous || (captureRef.current && captureRef.current.sampleRate !== chunk.rate)) {
+    if (chunk.discontinuous || chunk.lossy || segmentLossyRef.current ||
+        (captureRef.current && captureRef.current.sampleRate !== chunk.rate)) {
       ch1Buf.current = []; ch2Buf.current = [];
       filtRing1.current = []; filtRing2.current = [];
     }
+    segmentLossyRef.current = chunk.lossy === true;
+    setUsbDataLoss(segmentLossyRef.current);
     const bytes = chunk.data ?? Uint8Array.from(atob(chunk.b64), c => c.charCodeAt(0));
     const gain1 = vDivToVpp(ch1VerticalRef.current.vDiv / ch1VerticalRef.current.probe) / 256;
     const gain2 = vDivToVpp(ch2VerticalRef.current.vDiv / ch2VerticalRef.current.probe) / 256;
@@ -843,7 +849,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
     // Keep the raw buffers and their settings before Single/Stop clears the live refs.
     captureRef.current = {
       sampleRate: chunk.rate, capturedAt: new Date().toISOString(),
-      ch1: ch1Buf.current, ch2: ch2Buf.current,
+      ch1: ch1Buf.current, ch2: ch2Buf.current, usbDataLoss: segmentLossyRef.current,
       settings: {
         sampleRate: chunk.rate, ch1Vertical: {...ch1VerticalRef.current}, ch2Vertical: {...ch2VerticalRef.current},
         horizontal: {...horizontalRef.current}, trigger: {...triggerRef.current}, math: {...mathRef.current},
@@ -958,6 +964,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
       return;
     }
     captureRef.current = null;
+    setUsbDataLoss(false);
     setZeroFromReplay(false);
     ch1Buf.current = [];
     ch2Buf.current = [];
@@ -1172,6 +1179,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
   };
   const handleClear = () => {
     captureRef.current = null;
+    setUsbDataLoss(false);
     ch1Buf.current = []; ch2Buf.current = []; mathBuf.current = [];
     phosphorTraces.current = [];
     plotRef.current?.setData([[], [], [], []]);
@@ -1340,6 +1348,7 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
     zeroRef.current = zero;
     freshZeroCaptureRef.current = false;
     captureRef.current = capture;
+    setUsbDataLoss(capture.usbDataLoss === true);
     setZeroFromReplay(true);
     setZeroCalibration(zero);
     setCh1Vertical({...s.ch1Vertical, ...display.ch1Vertical});
@@ -1360,7 +1369,10 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
   scopeControlRef.current = async (action, params) => {
     const status = () => ({connected, acquireMode: acquireModeRef.current, sampleRate, ch1Vertical, ch2Vertical,
       horizontal, trigger, math, phosphorEnabled, ch1Meas, ch2Meas, samples: ch1Buf.current.length,
-      zeroCalibration, zeroActive});
+      zeroCalibration, zeroActive,
+      // The retained segment that sr would save (it survives Stop, unlike samples).
+      capture: captureRef.current && {sampleRate: captureRef.current.sampleRate, samples: captureRef.current.ch1.length,
+        usbDataLoss: captureRef.current.usbDataLoss ?? null}});
     if (action === 'status') return status();
     if (action === 'sr') return encodeScopeCapture(captureRef.current);
     if (action === 'zero' || action === 'zero-reset') return updateZero(action, params);
@@ -1496,7 +1508,8 @@ export function WaveformDsoView({ transport, isActive, connected, resetting }: P
           )}
           <ScopeStatusBar ch1={ch1Vertical} ch2={ch2Vertical} zeroActive={zeroActive}
             sDiv={horizontal.sDiv} delayS={horizontal.position / 100 * horizontal.sDiv * 10}
-            sampleRateLabel={rateLabel} trigger={trigger} running={acquireMode !== "stopped" && acquireMode !== "single-held"} />
+            sampleRateLabel={rateLabel} trigger={trigger} running={acquireMode !== "stopped" && acquireMode !== "single-held"}
+            usbDataLoss={usbDataLoss} />
         </div>
 
         {/* Right Control Panel */}

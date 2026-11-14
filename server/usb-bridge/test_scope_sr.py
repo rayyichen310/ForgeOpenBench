@@ -37,6 +37,20 @@ class ScopeSrTests(unittest.TestCase):
             self.assertEqual(struct.unpack('<3f', session.read('analog-1-1-1')), (0.0, -1.25, 2.5))
             self.assertEqual(json.loads(session.read('scope-settings.json'))['zeroCalibration'], capture['zeroCalibration'])
 
+    def test_usb_data_loss_is_recorded_and_validated(self):
+        self.assertIsNone(scope_sr.build_sr(snapshot())[1]['usbDataLoss'])
+        for loss in (True, False):
+            capture = snapshot()
+            capture['usbDataLoss'] = loss
+            payload, summary = scope_sr.build_sr(capture)
+            self.assertIs(summary['usbDataLoss'], loss)
+            with zipfile.ZipFile(io.BytesIO(payload)) as session:
+                self.assertIs(json.loads(session.read('scope-settings.json'))['usbDataLoss'], loss)
+        capture = snapshot()
+        capture['usbDataLoss'] = 1
+        with self.assertRaises(ValueError):
+            scope_sr.build_sr(capture)
+
     def test_rejects_corrected_samples_or_invalid_zero_provenance(self):
         with self.assertRaisesRegex(ValueError, 'uncorrected'):
             scope_sr.build_sr({**snapshot(), 'zeroCorrectionAppliedToSamples': True})

@@ -306,6 +306,7 @@ class ServerState:
     rust_proc: Optional[subprocess.Popen] = None
     frame_ack: threading.Event = field(default_factory=threading.Event)
     scope_owner: object = None
+    dso_loss: Optional[dict] = None  # Windows DSO read accounting since the last start
 
 state = ServerState()
 _state_lock = asyncio.Lock()
@@ -697,6 +698,31 @@ def _capture_loop_rust() -> None:
     log.info("Rust capture loop exited")
 
 
+# The 6022BL has no sample memory: the ADC streams through the FX2 endpoint FIFO, and
+# samples are dropped on the device whenever USB does not drain it in time (two channels
+# above ~24 MSa/s exceed USB 2.0 bulk bandwidth). Nothing in the data marks the drop, so
+# loss is inferred from timing: bytes received must keep up with rate * 2 bytes/s.
+DSO_FIFO_BYTES = 2048        # smallest plausible EP6 buffering; a longer read gap overflows it
+DSO_READ_SLACK_S = 0.0005    # host wake-up latency tolerated before a read counts as lossy
+DSO_FLAG_LOSS = 0x80         # reserved low byte: samples are missing inside this frame
+
+
+def _dso_read_loss(rate_hz: int, received: int, read_s: float, gap_s: Optional[float]) -> tuple[bool, bool, int]:
+    """Classify one bulk read as (gap_lost, read_lost, estimated_lost_bytes).
+
+    gap_lost: the host left no transfer pending for longer than the FIFO lasts, so the
+    samples between the previous read and this one are not contiguous.
+    read_lost: the read took longer than delivering `received` bytes at the sample
+    rate allows, so the device dropped samples while it was in progress.
+    """
+    bytes_per_s = rate_hz * 2
+    gap_lost = gap_s is not None and gap_s * bytes_per_s > DSO_FIFO_BYTES
+    deficit = bytes_per_s * read_s - received
+    read_lost = deficit > bytes_per_s * DSO_READ_SLACK_S
+    lost = max(0, round(deficit)) + (max(0, round(gap_s * bytes_per_s) - DSO_FIFO_BYTES) if gap_lost else 0)
+    return gap_lost, read_lost, lost
+
+
 def _capture_loop_windows() -> None:
     """Read interleaved DSO samples with WinUSB using the existing binary protocol."""
     dev = state.device
@@ -704,20 +730,43 @@ def _capture_loop_windows() -> None:
     read_size = max(16_384, min(262_144, ((rate * 2 // 30 + 511) // 512) * 512))
     remainder = b""
     sequence = 0
+    last_end: Optional[float] = None
+    loss = state.dso_loss = {"reads": 0, "gap_lost": 0, "read_lost": 0,
+                             "received_bytes": 0, "estimated_lost_bytes": 0, "max_read_excess_s": 0.0}
+    log_t0 = time.perf_counter()
     try:
         while not state.stop_event.is_set():
+            t0 = time.perf_counter()
             try:
-                raw = remainder + bytes(dev.read(BULK_IN_EP_DSO, read_size, timeout=500))
+                data = dev.read(BULK_IN_EP_DSO, read_size, timeout=500)
             except usb.core.USBTimeoutError:
+                last_end = None
                 continue
+            t1 = time.perf_counter()
+            gap_lost, read_lost, lost = _dso_read_loss(
+                rate, len(data), t1 - t0, None if last_end is None else t0 - last_end)
+            last_end = t1
+            loss["reads"] += 1
+            loss["gap_lost"] += gap_lost
+            loss["read_lost"] += read_lost
+            loss["received_bytes"] += len(data)
+            loss["estimated_lost_bytes"] += lost
+            loss["max_read_excess_s"] = max(loss["max_read_excess_s"], t1 - t0 - len(data) / (rate * 2))
+            if gap_lost:
+                remainder = b""         # never pair a byte across missing samples
+                sequence = sequence % 0xFFFFFF + 1  # skipped number: the frontend starts a new segment
+            raw = remainder + bytes(data)
             count = len(raw) - len(raw) % 2
             remainder = raw[count:]
             sequence = sequence % 0xFFFFFF + 1
             if count and (not state.clients or state.frame_ack.is_set()):
                 state.frame_ack.clear()
                 frame = bytearray(_build_la_binary_frame(rate, 8, raw[:count]))
-                frame[20:24] = ((sequence << 8) | 8).to_bytes(4, 'little')
+                frame[20:24] = ((sequence << 8) | 8 | (DSO_FLAG_LOSS if read_lost else 0)).to_bytes(4, 'little')
                 broadcast_binary_sync(bytes(frame))
+            if t1 - log_t0 >= 5:
+                log_t0 = t1
+                log.info("DSO %d Sa/s: %s", rate, loss)
     except usb.core.USBError as exc:
         log.exception("Windows DSO capture failed")
         broadcast_sync({"type": "usb_error", "message": str(exc)})
@@ -1228,6 +1277,7 @@ async def handle_usb_diag(_ws: WebSocketServerProtocol, _req: dict) -> dict:
         "clients": len(state.clients),
         "capturing": state.capturing,
         "pending_text": _is_pending(_pending_text),
+        "dso_loss": state.dso_loss,
         "config": {
             "sample_rate_hz": state.config.sample_rate_hz,
             "sample_width": state.config.sample_width,

@@ -12,6 +12,7 @@ interface Props {
   sampleRateLabel: string;
   trigger: TriggerState;
   running: boolean;
+  usbDataLoss?: boolean;
 }
 
 const CHANNEL_COLOR = { ch1: "#F59E0B", ch2: "#60A5FA" };
@@ -46,7 +47,7 @@ function Channel({ id, state, zeroed }: { id: "ch1" | "ch2"; state: VerticalStat
   );
 }
 
-export function ScopeStatusBar({ ch1, ch2, zeroActive, sDiv, delayS, sampleRateLabel, trigger, running }: Props) {
+export function ScopeStatusBar({ ch1, ch2, zeroActive, sDiv, delayS, sampleRateLabel, trigger, running, usbDataLoss }: Props) {
   return (
     <div role="status" aria-label="Scope settings"
       className="flex items-center gap-3 shrink-0 rounded border border-fob-border bg-fob-surface px-2 py-0.5 font-mono text-[11px] whitespace-nowrap overflow-hidden">
@@ -55,6 +56,8 @@ export function ScopeStatusBar({ ch1, ch2, zeroActive, sDiv, delayS, sampleRateL
       <span><b>H</b> {formatSDiv(sDiv)} {sampleRateLabel}</span>
       <span><b>D</b> {formatSeconds(delayS)}</span>
       <span><b>T</b> {SOURCE[trigger.source]} {SLOPE[trigger.slope]} {formatVolts(trigger.level)} {MODE[trigger.mode]}</span>
+      {usbDataLoss && <span className="font-bold text-amber-400" data-usb-loss
+        title="USB could not keep up: samples are missing inside this trace. Lower the sample rate for contiguous data.">USB LOSS</span>}
       <span className={`ml-auto font-bold ${running ? "text-green-400" : "text-red-400"}`}>{running ? "RUN" : "STOP"}</span>
     </div>
   );

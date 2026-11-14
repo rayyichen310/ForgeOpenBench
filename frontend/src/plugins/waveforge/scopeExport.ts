@@ -11,6 +11,8 @@ export interface ScopeCapture {
   ch1: number[];
   ch2: number[];
   zeroCalibration?: CaptureZeroCalibration;
+  /** True when USB timing showed samples missing inside the capture; undefined for older SR files. */
+  usbDataLoss?: boolean;
   /** Replay only: added to sample times so the axis keeps the chosen SR time origin. */
   timeOffsetS?: number;
 }
@@ -22,6 +24,7 @@ export function encodeScopeCapture(capture: ScopeCapture | null) {
     capturedAt: capture.capturedAt, settings: capture.settings,
     zeroCalibration: capture.zeroCalibration ?? {ch1:null,ch2:null},
     zeroCorrectionAppliedToSamples: false,
+    usbDataLoss: capture.usbDataLoss ?? null,
     hardwareRangesVpp: {
       CH1: vDivToVpp(capture.settings.ch1Vertical.vDiv / capture.settings.ch1Vertical.probe),
       CH2: vDivToVpp(capture.settings.ch2Vertical.vDiv / capture.settings.ch2Vertical.probe),

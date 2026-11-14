@@ -31,6 +31,8 @@ export interface UsbDataChunk {
   b64: string;
   data?: Uint8Array; // raw binary from Rust native capture (no base64)
   discontinuous?: boolean;
+  /** DSO only: the bridge measured that the device dropped samples inside this chunk. */
+  lossy?: boolean;
 }
 
 export type UsbDataHandler = (chunk: UsbDataChunk) => void;

@@ -91,8 +91,8 @@ async function scopeCaptureFixture(zero=zeroStoreMock()) {
     await act(async()=>{result=await control!(action,params);});
     return result;
   };
-  const push=async(data:Uint8Array,rate=1e6,discontinuous=false)=>{
-    await act(async()=>onData?.({data,rate,b64:'',discontinuous} as UsbDataChunk));
+  const push=async(data:Uint8Array,rate=1e6,discontinuous=false,lossy=false)=>{
+    await act(async()=>onData?.({data,rate,b64:'',discontinuous,lossy} as UsbDataChunk));
   };
   const close=async()=>{await act(async()=>root.unmount());vi.unstubAllGlobals();};
   const setConnected=async(connected:boolean)=>{
@@ -115,6 +115,23 @@ function floats(base64:string):number[] {
 const zeroSettings={sampleRate:1e6,ch1Vertical:{probe:10,vDiv:0.5,coupling:'dc'},
   ch2Vertical:{probe:10,vDiv:0.5,coupling:'dc'},trigger:{mode:'auto'},horizontal:{sDiv:0.0002}};
 const groundData=Uint8Array.from({length:8000},(_,i)=>i%2 ? 160 : 134);
+
+it('keeps a USB-lossy chunk as its own flagged segment and never joins clean data to it',async()=>{
+  const scope=await scopeCaptureFixture();
+  try {
+    await scope.command('set',{...zeroSettings,horizontal:{sDiv:0.002}});
+    await scope.command('run');
+    await scope.push(groundData);
+    await scope.push(groundData,1e6,false,true);
+    expect((await scope.command('status')).capture).toEqual({sampleRate:1e6,samples:4000,usbDataLoss:true});
+    expect(scope.container.textContent).toContain('USB LOSS');
+    await scope.push(groundData); await scope.push(groundData);
+    expect((await scope.command('status')).capture).toEqual({sampleRate:1e6,samples:8000,usbDataLoss:false});
+    expect(scope.container.textContent).not.toContain('USB LOSS');
+    await scope.command('stop');
+    expect((await scope.command('sr')).usbDataLoss).toBe(false);
+  } finally {await scope.close();}
+});
 
 it('zeroes CH1 immediately, preserves raw SR, isolates CH2 and resets without acquiring again',async()=>{
   const scope=await scopeCaptureFixture();
